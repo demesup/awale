@@ -131,6 +131,7 @@ bool is_valid_challenge(int client_socket, const char *current_user, const char 
     }
     if (players[challenged_index].in_game) {
         send_message(client_socket, "The player is already in game. If you want to observe type O/o/0");
+        return false;
     }
     return true;
 }
