@@ -286,13 +286,13 @@ void play_game(Game *game, int client_socket, int challenged_socket) {
         Player *current_player, *opponent_player;
         int current_socket, opponent_socket;
         if (game->current_turn == 1) {
-            *current_player = game->player1;
-            *opponent_player = game->player2;
+            *current_player = &(game->player1);
+            *opponent_player = &(game->player2);
             current_socket = client_socket;
             opponent_socket = challenged_socket;
         } else {
-            *current_player = game->player2;
-            *opponent_player = game->player1;
+            *current_player = &(game->player2);
+            *opponent_player = &(game->player1);
             current_socket = challenged_socket;
             opponent_socket = client_socket;
         }
