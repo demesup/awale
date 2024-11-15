@@ -63,6 +63,7 @@ void decline_challenge(int client_socket, int challenged_socket);
 void invalid_response(int client_socket, int challenged_socket);
 
 void initialize_game(int client_socket, int challenged_socket, const char *current_user, int challenged_index);
+void send_board(int client_socket, Player *player1, Player *player2);
 
 void handle_challenge(int client_socket, const char *current_user) {
     char challenge_user[50];
@@ -140,6 +141,7 @@ void handle_challenged_response(char response, int client_socket, int challenged
         decline_challenge(client_socket, challenged_socket);
     } else {
         invalid_response(client_socket, challenged_socket);
+        return;
     }
 }
 
@@ -152,7 +154,47 @@ void accept_challenge(int client_socket, int challenged_socket, const char *curr
     players[challenged_index].in_game = true;
 
     initialize_game(client_socket, challenged_socket, current_user, challenged_index);
+// todo: show pits
 }
+
+
+void send_board(int client_socket, Player *player1, Player *player2) {
+    char board[BUFFER_SIZE];
+    char temp[BUFFER_SIZE];
+
+    // Ensure that player2 is always the second player (if player1 has a higher ID, we swap them for clarity)
+    if (player2->socket < player1->socket) {
+        Player *temp_player = player1;
+        player1 = player2;
+        player2 = temp_player;
+    }
+
+    // Construct the board in text form to be sent over the socket
+    // Check the value of the pits just before sending the board
+    for (int i = 0; i < 6; i++) {
+        printf("player1->pits[%d]: %d\n", i, player1->pits[i]);
+        printf("player2->pits[%d]: %d\n", i, player2->pits[i]);
+    }
+
+// Send board to client
+    snprintf(board, sizeof(board),
+             "\nGame Board:\n"
+             "      +----+----+----+----+----+----+----+\n"
+             "      | %2d | %2d | %2d | %2d | %2d | %2d | %2d |\n"
+             "      +----+----+----+----+----+----+----+\n"
+             " Store: %2d                      Store: %2d\n"
+             "      +----+----+----+----+----+----+----+\n"
+             "      | %2d | %2d | %2d | %2d | %2d | %2d | %2d |\n"
+             "      +----+----+----+----+----+----+----+\n",
+             player2->pits[5], player2->pits[4], player2->pits[3], player2->pits[2], player2->pits[1], player2->pits[0], player2->store,
+             player1->store,
+             player1->pits[0], player1->pits[1], player1->pits[2], player1->pits[3], player1->pits[4], player1->pits[5]
+    );
+
+    send(client_socket, board, strlen(board), 0);
+
+}
+
 
 void decline_challenge(int client_socket, int challenged_socket) {
     send(client_socket, "Your challenge has been declined.\n", 34, 0);
@@ -190,6 +232,10 @@ void initialize_game(int client_socket, int challenged_socket, const char *curre
     // Notify players
     send(client_socket, "Game is starting! You go first.\n", 32, 0);
     send(challenged_socket, "Game is starting! Wait for your turn.\n", 38, 0);
+
+    send_board(client_socket, new_game->player1, new_game->player2);
+    send_board(challenged_socket, new_game->player1, new_game->player2);
+
 }
 
 
