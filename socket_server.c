@@ -44,30 +44,52 @@ pthread_mutex_t player_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Function prototypes
 void handle_registration(int client_socket, char *pseudo, char *password);
+
 void handle_login(int client_socket, char *pseudo, char *password);
+
 void send_online_players(int client_socket);
+
 void save_player_to_file(Player *player);
+
 void load_players_from_file();
+
 int find_player_by_pseudo(const char *pseudo);
+
 void handle_visit(int client_socket);
 
 void handle_challenge(int client_socket, const char *current_user);
-void handle_challenged_response(char response, int client_socket, int challenged_socket, const char *current_user, int challenged_index);
+
+void handle_challenged_response(char response, int client_socket, int challenged_socket, const char *current_user,
+                                int challenged_index);
+
 bool get_challenged_user(int client_socket, const char *current_user, char *challenge_user);
+
 bool is_valid_challenge(int client_socket, const char *current_user, const char *challenge_user, int challenged_index);
+
 bool is_valid_challenge(int client_socket, const char *current_user, const char *challenge_user, int challenged_index);
+
 void notify_challenge_sent(int client_socket);
+
 void process_challenge_response(int client_socket, const char *current_user, int challenged_index);
+
 void accept_challenge(int client_socket, int challenged_socket, const char *current_user, int challenged_index);
+
 void decline_challenge(int client_socket, int challenged_socket);
+
 void invalid_response(int client_socket, int challenged_socket);
 
 void initialize_game(int client_socket, int challenged_socket, const char *current_user, int challenged_index);
+
 void send_board(int client_socket, Player *player1, Player *player2);
+
+void send_message(int socket, const char *message);
+
+void handle_logout(int client_socket, const char *current_user);
 
 void handle_challenge(int client_socket, const char *current_user) {
     char challenge_user[50];
 
+    printf("Challenge");
     if (!get_challenged_user(client_socket, current_user, challenge_user)) {
         return;
     }
@@ -83,13 +105,12 @@ void handle_challenge(int client_socket, const char *current_user) {
 
 bool get_challenged_user(int client_socket, const char *current_user, char *challenge_user) {
     char buffer[BUFFER_SIZE];
-    send(client_socket, "Enter the username to challenge:\n", 33, 0);
+    send_message(client_socket, "Enter the username to challenge:\n");
 
     bzero(buffer, BUFFER_SIZE);
     int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
     if (bytes_received <= 0) {
-        printf("Client disconnected.\n");
-        close(client_socket);
+        handle_logout(client_socket, current_user);
         return false;
     }
 
@@ -97,7 +118,7 @@ bool get_challenged_user(int client_socket, const char *current_user, char *chal
     sscanf(buffer, "%s", challenge_user);
 
     if (strcmp(current_user, challenge_user) == 0) {
-        send(client_socket, "You cannot challenge yourself!\n", 30, 0);
+        send_message(client_socket, "You cannot challenge yourself!\n");
         return false;
     }
     return true;
@@ -105,14 +126,17 @@ bool get_challenged_user(int client_socket, const char *current_user, char *chal
 
 bool is_valid_challenge(int client_socket, const char *current_user, const char *challenge_user, int challenged_index) {
     if (challenged_index < 0 || !players[challenged_index].is_online) {
-        send(client_socket, "The player is not online or does not exist.\n", 44, 0);
+        send_message(client_socket, "The player is not online or does not exist.\n");
         return false;
+    }
+    if (players[challenged_index].in_game) {
+        send_message(client_socket, "The player is already in game. If you want to observe type O/o/0");
     }
     return true;
 }
 
 void notify_challenge_sent(int client_socket) {
-    send(client_socket, "Challenge sent. Waiting for response...\n", 40, 0);
+    send_message(client_socket, "Challenge sent. Waiting for response...\n");
 }
 
 void process_challenge_response(int client_socket, const char *current_user, int challenged_index) {
@@ -120,7 +144,7 @@ void process_challenge_response(int client_socket, const char *current_user, int
     char challenge_notification[BUFFER_SIZE];
     snprintf(challenge_notification, sizeof(challenge_notification),
              "%s is challenging you! Do you accept? (1/A/a to accept, 2/D/d to decline)\n", current_user);
-    send(challenged_socket, challenge_notification, strlen(challenge_notification), 0);
+    send_message(challenged_socket, challenge_notification);
 
     char buffer[BUFFER_SIZE];
     bzero(buffer, BUFFER_SIZE);
@@ -134,7 +158,8 @@ void process_challenge_response(int client_socket, const char *current_user, int
     handle_challenged_response(buffer[0], client_socket, challenged_socket, current_user, challenged_index);
 }
 
-void handle_challenged_response(char response, int client_socket, int challenged_socket, const char *current_user, int challenged_index) {
+void handle_challenged_response(char response, int client_socket, int challenged_socket, const char *current_user,
+                                int challenged_index) {
     if (response == '1' || response == 'A' || response == 'a') {
         accept_challenge(client_socket, challenged_socket, current_user, challenged_index);
     } else if (response == '2' || response == 'D' || response == 'd') {
@@ -146,15 +171,14 @@ void handle_challenged_response(char response, int client_socket, int challenged
 }
 
 void accept_challenge(int client_socket, int challenged_socket, const char *current_user, int challenged_index) {
-    send(challenged_socket, "You accepted the challenge!\n", 28, 0);
-    send(client_socket, "Your challenge has been accepted!\n", 34, 0);
+    send_message(challenged_socket, "You accepted the challenge!\n");
+    send_message(client_socket, "Your challenge has been accepted!\n");
 
     // Set players as in a game
     players[find_player_by_pseudo(current_user)].in_game = true;
     players[challenged_index].in_game = true;
 
     initialize_game(client_socket, challenged_socket, current_user, challenged_index);
-// todo: show pits
 }
 
 
@@ -162,46 +186,46 @@ void send_board(int client_socket, Player *player1, Player *player2) {
     char board[BUFFER_SIZE];
     char temp[BUFFER_SIZE];
 
-    // Ensure that player2 is always the second player (if player1 has a higher ID, we swap them for clarity)
-    if (player2->socket < player1->socket) {
-        Player *temp_player = player1;
-        player1 = player2;
-        player2 = temp_player;
-    }
-
 // Send board to client
     snprintf(board, sizeof(board),
              "\nGame Board:\n"
-             "      +----+----+----+----+----+----+----+\n"
-             "      | %2d | %2d | %2d | %2d | %2d | %2d |\n"
-             "      +----+----+----+----+----+----+----+\n"
-             "      +----+----+----+----+----+----+----+\n"
-             "      | %2d | %2d | %2d | %2d | %2d | %2d |\n"
-             "      +----+----+----+----+----+----+----+\n",
+             "      +----+----+----+----+----+----+ %s\n"
+             "      | %2d | %2d | %2d | %2d | %2d | %2d |Store: %2d\n"
+             "      +----+----+----+----+----+----+\n"
+             "      +----+----+----+----+----+----+\n"
+             "      | %2d | %2d | %2d | %2d | %2d | %2d |Store: %2d\n"
+             "      +----+----+----+----+----+----+ %s\n",
+             player2->pseudo,
              player2->pits[5], player2->pits[4], player2->pits[3], player2->pits[2], player2->pits[1], player2->pits[0],
-             player1->pits[0], player1->pits[1], player1->pits[2], player1->pits[3], player1->pits[4], player1->pits[5]
+             player2->store,
+             player1->pits[0], player1->pits[1], player1->pits[2], player1->pits[3], player1->pits[4], player1->pits[5],
+             player1->store,
+             player1->pseudo
     );
 
-    send(client_socket, board, strlen(board), 0);
+    send_message(client_socket, board);
 
 }
 
+void send_message(int socket, const char *message) {
+    send(socket, message, strlen(message), 0);
+}
 
 void decline_challenge(int client_socket, int challenged_socket) {
-    send(client_socket, "Your challenge has been declined.\n", 34, 0);
-    send(challenged_socket, "You declined the challenge.\n", 28, 0);
+    send_message(client_socket, "Your challenge has been declined.\n");
+    send_message(challenged_socket, "You declined the challenge.\n");
 }
 
 void invalid_response(int client_socket, int challenged_socket) {
-    send(client_socket, "Invalid response. Challenge declined.\n", 38, 0);
-    send(challenged_socket, "Invalid response. Challenge declined.\n", 38, 0);
+    send_message(client_socket, "Invalid response. Challenge declined.\n");
+    send_message(challenged_socket, "Invalid response. Challenge declined.\n");
 }
 
 void initialize_game(int client_socket, int challenged_socket, const char *current_user, int challenged_index) {
     Game *new_game = malloc(sizeof(Game));
     if (!new_game) {
-        send(client_socket, "Failed to start the game due to server error.\n", 46, 0);
-        send(challenged_socket, "Failed to start the game due to server error.\n", 46, 0);
+        send_message(client_socket, "Failed to start the game due to server error.\n");
+        send_message(challenged_socket, "Failed to start the game due to server error.\n");
         return;
     }
 
@@ -213,51 +237,59 @@ void initialize_game(int client_socket, int challenged_socket, const char *curre
     for (int i = 0; i < PITS; i++) {
         new_game->player1->pits[i] = INITIAL_SEEDS;
         new_game->player2->pits[i] = INITIAL_SEEDS;
-        send(client_socket, )
     }
     new_game->player1->store = 0;
     new_game->player2->store = 0;
 
     // Player 1 starts
-    new_game->current_turn = 1;
-
-    // Notify players
-    send(client_socket, "Game is starting! You go first.\n", 32, 0);
-    send(challenged_socket, "Game is starting! Wait for your turn.\n", 38, 0);
+    srand(time(NULL));
+    new_game->current_turn = (rand() % 2) + 1;
+    if (new_game->current_turn == 1) {
+        send_message(client_socket, "Game is starting! You go first.\n");
+        send_message(challenged_socket, "Game is starting! Wait for your turn.\n");
+    } else {
+        send_message(challenged_socket, "Game is starting! You go first.\n");
+        send_message(client_socket, "Game is starting! Wait for your turn.\n");
+    }
 
     send_board(client_socket, new_game->player1, new_game->player2);
-    send_board(challenged_socket, new_game->player1, new_game->player2);
+    send_board(challenged_socket, new_game->player2, new_game->player1);
 
 }
 
 
-
 void handle_logout(int client_socket, const char *current_user) {
-    send(client_socket, "Logging out...\n", 16, 0);
+    send_message(client_socket, "Logging out...\n");
+
     pthread_mutex_lock(&player_mutex);
 
     int player_index = find_player_by_pseudo(current_user);
     if (player_index >= 0) {
         players[player_index].is_online = false;
+        players[player_index].in_game = false;  // Ensure they are not in-game
+        players[player_index].socket = -1;     // Reset the socket
     }
 
     pthread_mutex_unlock(&player_mutex);
+
     printf("Player logged out: %s\n", current_user);
+
+    close(client_socket);
+    pthread_exit(NULL);
 }
 
 void handle_logged_in_menu(int client_socket, const char *current_user) {
     char buffer[BUFFER_SIZE];
 
     while (1) {
-        send(client_socket,
-             "\nMenu:\n1. List all online players\n2. Challenge a player by username\n3. Logout\nEnter your choice:\n",
-             97, 0);
+        send_message(client_socket,
+                     "\nMenu:\n1. List all online players\n2. Challenge a player by username\n3. Logout\nEnter your choice:\n"
+        );
 
         bzero(buffer, BUFFER_SIZE);
         int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
         if (bytes_received <= 0) {
-            close(client_socket);
-            printf("Client disconnected.\n");
+            handle_logout(client_socket, current_user);
             return;
         }
 
@@ -277,21 +309,21 @@ void handle_logged_in_menu(int client_socket, const char *current_user) {
                 return;
 
             default:
-                send(client_socket, "Invalid choice. Try again.\n", 27, 0);
+                send_message(client_socket, "Invalid choice. Try again.\n");
                 break;
         }
     }
 }
 
 void *handle_client(void *arg) {
-    int client_socket = *((int *)arg);
+    int client_socket = *((int *) arg);
     free(arg);
 
     char buffer[BUFFER_SIZE];
     bzero(buffer, BUFFER_SIZE);
 
     // Welcome message and instructions sent to the client
-    send(client_socket, "Welcome to the server!\n", 23, 0);
+    send_message(client_socket, "Welcome to the server!\n");
 
     handle_visit(client_socket);
 
@@ -307,17 +339,16 @@ void handle_visit(int client_socket) {
     bzero(buffer, BUFFER_SIZE);
 
     // Send instructions to the client
-    send(client_socket, "REGISTER <pseudo> <password>\nLOGIN <pseudo> <password>\n", 55, 0);
-
-    char current_user[50] = {0}; // Stores the current logged-in user
-
     // Main loop to handle commands from the client
     while (1) {
+        send_message(client_socket, "REGISTER <pseudo> <password>\nLOGIN <pseudo> <password>\n");
+
+        char current_user[50] = {0}; // Stores the current logged-in user
+
         bzero(buffer, BUFFER_SIZE);
         int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
         if (bytes_received <= 0) {
-            printf("Client disconnected.\n");
-            close(client_socket);
+            handle_logout(client_socket, current_user);
             return;  // Exit if the client disconnects
         }
 
@@ -330,7 +361,8 @@ void handle_visit(int client_socket) {
         } else if (strcmp(command, "LOGIN") == 0) {
             handle_login(client_socket, pseudo, password);  // Handle login
         } else {
-            send(client_socket, "Invalid command! Use REGISTER or LOGIN.\n", 40, 0);  // Invalid command
+            send_message(client_socket, "Invalid command! Use REGISTER or LOGIN.\n");
+            // Invalid command
         }
     }
 
@@ -360,13 +392,13 @@ bool is_pseudo_in_file(const char *pseudo) {
 void handle_registration(int client_socket, char *pseudo, char *password) {
     // Validate input: pseudo and password cannot be empty
     if (strlen(pseudo) == 0 || strlen(password) == 0) {
-        send(client_socket, "Pseudo and password cannot be empty!\n", 38, 0);
+        send_message(client_socket, "Pseudo and password cannot be empty!\n");
         return;
     }
 
     // Check if pseudo already exists in the file
     if (is_pseudo_in_file(pseudo)) {
-        send(client_socket, "Pseudo already taken!\n", 23, 0);
+        send_message(client_socket, "Pseudo already taken!\n");
         return;
     }
 
@@ -375,9 +407,8 @@ void handle_registration(int client_socket, char *pseudo, char *password) {
     // Check if pseudo already exists among online players
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (players[i].is_online && strcmp(players[i].pseudo, pseudo) == 0) {
-            send(client_socket, "Pseudo already taken!\n", 23, 0);
+            send_message(client_socket, "Pseudo already taken!\n");
             pthread_mutex_unlock(&player_mutex);
-            handle_visit(client_socket);
             return;
         }
     }
@@ -393,7 +424,7 @@ void handle_registration(int client_socket, char *pseudo, char *password) {
 
             save_player_to_file(&players[i]); // Save to file
 
-            send(client_socket, "Registration successful!\n", 25, 0);
+            send_message(client_socket, "Registration successful!\n");
             printf("Player registered: %s\n", pseudo);
 
             pthread_mutex_unlock(&player_mutex);
@@ -402,15 +433,14 @@ void handle_registration(int client_socket, char *pseudo, char *password) {
         }
     }
 
-    send(client_socket, "Server full!\n", 13, 0);
+    send_message(client_socket, "Server full!\n");
     pthread_mutex_unlock(&player_mutex);
 }
 
 void handle_login(int client_socket, char *pseudo, char *password) {
     // Step 1: Validate input
     if (strlen(pseudo) == 0 || strlen(password) == 0) {
-        send(client_socket, "Pseudo and password cannot be empty!\n", 37, 0);
-        handle_visit(client_socket);
+        send_message(client_socket, "Pseudo and password cannot be empty!\n");
         return;
     }
 
@@ -421,18 +451,16 @@ void handle_login(int client_socket, char *pseudo, char *password) {
     if (player_index >= 0) {
         if (players[player_index].is_online) {
             // If the player is already online
-            send(client_socket, "You are already logged in!\n", 27, 0);
+            send_message(client_socket, "You are already logged in!\n");
             pthread_mutex_unlock(&player_mutex);  // Unlock mutex before returning
-            handle_visit(client_socket);
             return;
         }
 
         // Step 3: Verify password
         if (strcmp(players[player_index].password, password) != 0) {
             // If password is incorrect
-            send(client_socket, "Incorrect password!\n", 20, 0);
+            send_message(client_socket, "Incorrect password!\n");
             pthread_mutex_unlock(&player_mutex);  // Unlock mutex before returning
-            handle_visit(client_socket);
             return;
         }
 
@@ -440,7 +468,7 @@ void handle_login(int client_socket, char *pseudo, char *password) {
         players[player_index].is_online = true;
         players[player_index].socket = client_socket;
 
-        send(client_socket, "Login successful!\n", 18, 0);
+        send_message(client_socket, "Login successful!\n");
         printf("Player logged in: %s\n", pseudo);
 
         pthread_mutex_unlock(&player_mutex);  // Unlock mutex after handling the login
@@ -448,9 +476,8 @@ void handle_login(int client_socket, char *pseudo, char *password) {
 
     } else {
         // If the user doesn't exist
-        send(client_socket, "Player not found!\n", 18, 0);
+        send_message(client_socket, "Player not found!\n");
         pthread_mutex_unlock(&player_mutex);
-        handle_visit(client_socket);
     }
 
 }
@@ -510,7 +537,7 @@ void send_online_players(int client_socket) {
             strcat(response, "\n");
         }
     }
-    send(client_socket, response, strlen(response), 0);
+    send_message(client_socket, response);
 
     pthread_mutex_unlock(&player_mutex);
 }
@@ -555,13 +582,13 @@ int main(int argc, char **argv) {
     }
 
     // Initialize server parameters
-    bzero((char *)&serv_addr, sizeof(serv_addr));
+    bzero((char *) &serv_addr, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     serv_addr.sin_port = htons(atoi(argv[1]));
 
     // Bind the socket
-    if (bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+    if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
         perror("Bind failed");
         close(sockfd);
         exit(EXIT_FAILURE);
@@ -578,7 +605,7 @@ int main(int argc, char **argv) {
 
     while (1) {
         clilen = sizeof(cli_addr);
-        newsockfd = accept(sockfd, (struct sockaddr *)&cli_addr, &clilen);
+        newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
         if (newsockfd < 0) {
             perror("Accept failed");
             continue;
