@@ -31,8 +31,7 @@ void send_online_players(int client_socket);
 void save_player_to_file(Player *player);
 void load_players_from_file();
 int find_player_by_pseudo(const char *pseudo);
-void handle_login_or_register(int client_socket, char *current_user);
-
+void handle_visit(int client_socket);
 
 void handle_challenge(int client_socket, const char *current_user) {
     char buffer[BUFFER_SIZE];
@@ -81,12 +80,8 @@ void handle_logged_in_menu(int client_socket, const char *current_user) {
 
     while (1) {
         send(client_socket,
-             "\nMenu:\n"
-             "1. List all online players\n"
-             "2. Challenge a player by username\n"
-             "3. Logout\n"
-             "Enter your choice:",
-             96, 0);
+             "\nMenu:\n1. List all online players\n2. Challenge a player by username\n3. Logout\nEnter your choice:\n",
+             97, 0);
 
         bzero(buffer, BUFFER_SIZE);
         int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
@@ -125,50 +120,73 @@ void *handle_client(void *arg) {
     char buffer[BUFFER_SIZE];
     bzero(buffer, BUFFER_SIZE);
 
+    // Welcome message and instructions sent to the client
     send(client_socket, "Welcome to the server!\n", 23, 0);
-    send(client_socket, "Please enter:\n", 14, 0);
+
+    handle_visit(client_socket);
+
+
+    close(client_socket);  // Close the socket after registration or login is handled
+    return NULL;
+}
+
+
+// New handle_visit method to handle client interaction during registration and login
+void handle_visit(int client_socket) {
+    char buffer[BUFFER_SIZE];
+    bzero(buffer, BUFFER_SIZE);
+
+    // Send instructions to the client
     send(client_socket, "REGISTER <pseudo> <password>\nLOGIN <pseudo> <password>\n", 55, 0);
 
-    char current_user[50] = {0};
+    char current_user[50] = {0}; // Stores the current logged-in user
 
+    // Main loop to handle commands from the client
     while (1) {
         bzero(buffer, BUFFER_SIZE);
         int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
         if (bytes_received <= 0) {
             printf("Client disconnected.\n");
             close(client_socket);
-            return NULL;
+            return;  // Exit if the client disconnects
         }
 
-        buffer[bytes_received] = '\0';
+        buffer[bytes_received] = '\0';  // Null-terminate the received string
         char command[BUFFER_SIZE], pseudo[50], password[50];
-        sscanf(buffer, "%s %s %s", command, pseudo, password);
+        sscanf(buffer, "%s %s %s", command, pseudo, password);  // Parse the command
 
         if (strcmp(command, "REGISTER") == 0) {
-            handle_registration(client_socket, pseudo, password);
+            handle_registration(client_socket, pseudo, password);  // Handle registration
         } else if (strcmp(command, "LOGIN") == 0) {
-            handle_login(client_socket, pseudo, password);
-
-            int player_index = find_player_by_pseudo(pseudo);
-            if (player_index >= 0 && players[player_index].is_online) {
-                strcpy(current_user, pseudo); // Store logged-in user
-                send(client_socket, "Welcome to the game lobby!\n", 27, 0);
-
-                // Delegate to the menu handler
-                handle_logged_in_menu(client_socket, current_user);
-                break;
-            }
+            handle_login(client_socket, pseudo, password);  // Handle login
         } else {
-            send(client_socket, "Invalid command! Use REGISTER or LOGIN.\n", 40, 0);
+            send(client_socket, "Invalid command! Use REGISTER or LOGIN.\n", 40, 0);  // Invalid command
         }
     }
 
-    close(client_socket);
-    return NULL;
+    // The client is now logged in or registered, you can add any further handling if needed
 }
 
 
-// Handle player registration
+bool is_pseudo_in_file(const char *pseudo) {
+    FILE *file = fopen(PLAYER_FILE, "r");
+    if (!file) {
+        perror("Failed to open player file");
+        return false;
+    }
+
+    char file_pseudo[50], file_password[50];
+    while (fscanf(file, "%s %s", file_pseudo, file_password) == 2) {
+        if (strcmp(file_pseudo, pseudo) == 0) {
+            fclose(file);
+            return true;  // Pseudo found in file
+        }
+    }
+
+    fclose(file);
+    return false;  // Pseudo not found
+}
+
 void handle_registration(int client_socket, char *pseudo, char *password) {
     // Validate input: pseudo and password cannot be empty
     if (strlen(pseudo) == 0 || strlen(password) == 0) {
@@ -176,13 +194,20 @@ void handle_registration(int client_socket, char *pseudo, char *password) {
         return;
     }
 
+    // Check if pseudo already exists in the file
+    if (is_pseudo_in_file(pseudo)) {
+        send(client_socket, "Pseudo already taken!\n", 23, 0);
+        return;
+    }
+
     pthread_mutex_lock(&player_mutex);
 
-    // Check if pseudo already exists
+    // Check if pseudo already exists among online players
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (players[i].is_online && strcmp(players[i].pseudo, pseudo) == 0) {
             send(client_socket, "Pseudo already taken!\n", 23, 0);
             pthread_mutex_unlock(&player_mutex);
+            handle_visit(client_socket);
             return;
         }
     }
@@ -200,7 +225,9 @@ void handle_registration(int client_socket, char *pseudo, char *password) {
 
             send(client_socket, "Registration successful!\n", 25, 0);
             printf("Player registered: %s\n", pseudo);
+
             pthread_mutex_unlock(&player_mutex);
+            handle_logged_in_menu(client_socket, pseudo);
             return;
         }
     }
@@ -209,36 +236,55 @@ void handle_registration(int client_socket, char *pseudo, char *password) {
     pthread_mutex_unlock(&player_mutex);
 }
 
-// Handle player login
 void handle_login(int client_socket, char *pseudo, char *password) {
-    // Validate input: pseudo and password cannot be empty
+    // Step 1: Validate input
     if (strlen(pseudo) == 0 || strlen(password) == 0) {
-        send(client_socket, "Pseudo and password cannot be empty!\n", 38, 0);
+        send(client_socket, "Pseudo and password cannot be empty!\n", 37, 0);
+        handle_visit(client_socket);
         return;
     }
 
-    pthread_mutex_lock(&player_mutex);
+    pthread_mutex_lock(&player_mutex);  // Locking the mutex to ensure thread-safety
 
+    // Step 2: Check if the user is already online
     int player_index = find_player_by_pseudo(pseudo);
     if (player_index >= 0) {
-        if (strcmp(players[player_index].password, password) == 0) {
-            if (!players[player_index].is_online) {
-                players[player_index].socket = client_socket;
-                players[player_index].is_online = true;
-                send(client_socket, "Login successful!\n", 19, 0);
-                printf("Player logged in: %s\n", pseudo);
-            } else {
-                send(client_socket, "Player already online!\n", 24, 0);
-            }
-        } else {
-            send(client_socket, "Incorrect password!\n", 21, 0);
+        if (players[player_index].is_online) {
+            // If the player is already online
+            send(client_socket, "You are already logged in!\n", 27, 0);
+            pthread_mutex_unlock(&player_mutex);  // Unlock mutex before returning
+            handle_visit(client_socket);
+            return;
         }
+
+        // Step 3: Verify password
+        if (strcmp(players[player_index].password, password) != 0) {
+            // If password is incorrect
+            send(client_socket, "Incorrect password!\n", 20, 0);
+            pthread_mutex_unlock(&player_mutex);  // Unlock mutex before returning
+            handle_visit(client_socket);
+            return;
+        }
+
+        // Step 4: Mark the user as online and set their socket
+        players[player_index].is_online = true;
+        players[player_index].socket = client_socket;
+
+        send(client_socket, "Login successful!\n", 18, 0);
+        printf("Player logged in: %s\n", pseudo);
+
+        pthread_mutex_unlock(&player_mutex);  // Unlock mutex after handling the login
+        handle_logged_in_menu(client_socket, pseudo);
+
     } else {
-        send(client_socket, "Player not found! Register first.\n", 35, 0);
+        // If the user doesn't exist
+        send(client_socket, "Player not found!\n", 18, 0);
+        pthread_mutex_unlock(&player_mutex);
+        handle_visit(client_socket);
     }
 
-    pthread_mutex_unlock(&player_mutex);
 }
+
 
 // Save player to file
 void save_player_to_file(Player *player) {
