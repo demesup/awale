@@ -15,6 +15,8 @@
 #define PITS 6  // Number of pits per player
 #define INITIAL_SEEDS 4  // Initial seeds in each pit
 #define NAME_LENGTH 50
+#define MAX_BIO_LINES 10
+#define MAX_BIO_LENGTH 100
 
 typedef struct Move {
     int pit_index;            // Pit index of the move
@@ -31,6 +33,7 @@ typedef struct {
     int socket;
     bool in_game;
     bool is_online;
+    char bio[MAX_BIO_LINES][MAX_BIO_LENGTH];
 } Player;
 
 typedef struct {
@@ -61,6 +64,16 @@ void handle_challenge(int client_socket, const char *current_user);
 
 void handle_challenged_response(char response, int client_socket, int challenged_socket, const char *current_user,
                                 int challenged_index);
+
+void handle_add_bio(int client_socket, const char *current_user);
+
+void handle_see_bio(int client_socket, const char *current_user);
+
+void handle_see_bio_by_username(int client_socket);
+
+void save_bio(const char *username, const char *bio);
+
+int get_bio(const char *username, char *bio);
 
 void clean_up_game(Game *game);
 
@@ -107,6 +120,68 @@ int distribute_seeds(Player *current_player, Player *opponent, int pit_index);
 void end_game(Player *player1, Player *player2, int result, Game *game);
 
 void player_turn(Player *current_player, Player *opponent, Game *game);
+
+void write_bio(int client_socket, Player *player);
+
+void display_bio(int client_socket, const char *pseudo);
+
+void display_bio(int client_socket, const char *pseudo) {
+    int player_index = find_player_by_pseudo(pseudo);
+    if (player_index == -1) {
+        send_message(client_socket, "Le joueur avec ce pseudo n'existe pas.\n");
+        return;
+    }
+
+    Player *player = &players[player_index];
+
+    char bio_header[BUFFER_SIZE];
+    snprintf(bio_header, sizeof(bio_header), "Voici la bio de %s :\n", pseudo);
+    send_message(client_socket, bio_header);
+
+    // Afficher la bio ligne par ligne
+    for (int i = 0; i < MAX_BIO_LINES; i++) {
+        if (strlen(player->bio[i]) > 0) {
+            send_message(client_socket, player->bio[i]);
+        }
+    }
+
+    send_message(client_socket, "\n");
+}
+
+void write_bio(int client_socket, Player *player) {
+    char buffer[BUFFER_SIZE];
+    char bio_message[] = "Veuillez entrer votre bio (maximum 10 lignes, tapez 'FIN' pour terminer):\n";
+    send_message(client_socket, bio_message);
+
+    // Réinitialiser la bio
+    memset(player->bio, 0, sizeof(player->bio));
+
+    // Demander à l'utilisateur de remplir sa bio ligne par ligne
+    for (int i = 0; i < MAX_BIO_LINES; i++) {
+        send_message(client_socket, "Entrez la ligne de bio : ");
+
+        bzero(buffer, sizeof(buffer));
+        int bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+        if (bytes_received <= 0) {
+            send_message(client_socket, "Déconnexion détectée.\n");
+            return;
+        }
+
+        buffer[bytes_received] = '\0';
+
+        // Si l'utilisateur entre 'FIN', on arrête la saisie
+        if (strncmp(buffer, "FIN", 3) == 0) {
+            break;
+        }
+
+        // Stocker la ligne dans la bio du joueur
+        snprintf(player->bio[i], MAX_BIO_LENGTH, "%s", buffer);
+    }
+
+    // Confirmer que la bio a été enregistrée
+    send_message(client_socket, "Votre bio a été enregistrée avec succès.\n");
+}
+
 
 void end_game(Player *player1, Player *player2, int result, Game *game) {
     char winner[NAME_LENGTH];
@@ -272,7 +347,7 @@ int distribute_seeds(Player *current_player, Player *opponent, int pit_index) {
         if (seeds == 0) break;
     }
 
-    return current_pit; // Return the last pit index
+    return curr_pit; // Return the last pit index
 }
 
 int is_game_over(Player player1, Player player2) {
@@ -470,7 +545,11 @@ void send_game_start_message(int client_socket, int challenged_socket, int curre
 
 void clean_up_game(Game *game) {
     game->player1->in_game = false;
+    game->player1->store = 0;
+    game->player1->move_history = NULL;
     game->player2->in_game = false;
+    game->player2->store = 0;
+    game->player2->move_history = NULL;
     free(game);
 }
 
@@ -539,12 +618,104 @@ void handle_logout(int client_socket, const char *current_user) {
     pthread_exit(NULL);
 }
 
+void save_bio(const char *username, const char *bio) {
+    char filename[BUFFER_SIZE];
+    sprintf(filename, "%s_bio.txt", username);
+
+    FILE *file = fopen(filename, "w");
+    if (file) {
+        fprintf(file, "%s", bio);
+        fclose(file);
+    } else {
+        printf("Failed to save bio for user %s.\n", username);
+    }
+}
+
+int get_bio(const char *username, char *bio) {
+    char filename[BUFFER_SIZE];
+    sprintf(filename, "%s_bio.txt", username);
+
+    FILE *file = fopen(filename, "r");
+    if (file) {
+        fgets(bio, BUFFER_SIZE, file);
+        fclose(file);
+        return 1;  // Bio found
+    } else {
+        return 0;  // Bio not found
+    }
+}
+
+
+void handle_add_bio(int client_socket, const char *current_user) {
+    char buffer[BUFFER_SIZE];
+    send_message(client_socket, "Enter your bio (10 lines max, ASCII characters only):\n");
+
+    // Lire la bio depuis le client
+    bzero(buffer, BUFFER_SIZE);
+    int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+    if (bytes_received <= 0) {
+        send_message(client_socket, "Failed to receive bio.\n");
+        return;
+    }
+
+    // Supposons que vous ayez une fonction qui enregistre la bio du joueur
+    save_bio(current_user, buffer);  // Enregistrer la bio dans un fichier ou une base de données
+
+    send_message(client_socket, "Your bio has been updated!\n");
+}
+
+void handle_see_bio_by_username(int client_socket) {
+    char buffer[BUFFER_SIZE];
+
+    send_message(client_socket, "Enter the username to see the bio:\n");
+    bzero(buffer, BUFFER_SIZE);
+    int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+    if (bytes_received <= 0) {
+        send_message(client_socket, "Failed to receive username.\n");
+        return;
+    }
+
+    char username[BUFFER_SIZE];
+    strcpy(username, buffer);  // Copier le nom d'utilisateur
+
+    char bio[BUFFER_SIZE];
+
+    // Supposons que vous ayez une fonction pour récupérer la bio d'un autre joueur
+    if (get_bio(username, bio)) {
+        send_message(client_socket, "Bio of ");
+        send_message(client_socket, username);
+        send_message(client_socket, ":\n");
+        send_message(client_socket, bio);
+    } else {
+        send_message(client_socket, "No bio found for this player.\n");
+    }
+}
+
+void handle_see_bio(int client_socket, const char *current_user) {
+    char bio[BUFFER_SIZE];
+
+    // Supposons que vous ayez une fonction pour récupérer la bio d'un joueur
+    if (get_bio(current_user, bio)) {
+        send_message(client_socket, "Your bio:\n");
+        send_message(client_socket, bio);
+    } else {
+        send_message(client_socket, "You don't have a bio yet.\n");
+    }
+}
+
+
 void handle_logged_in_menu(int client_socket, const char *current_user) {
     char buffer[BUFFER_SIZE];
 
     while (1) {
         send_message(client_socket,
-                     "\nMenu:\n1. List all online players\n2. Challenge a player by username\n3. Logout\nEnter your choice:\n"
+                     "\nMenu:\n"
+                     "1. List all online players\n"
+                     "2. Challenge a player by username\n"
+                     "3. Add/retype bio\n"
+                     "4. See my bio\n"
+                     "5. See bio by username\n"
+                     "13. Logout\nEnter your choice:\n"
         );
 
         bzero(buffer, BUFFER_SIZE);
@@ -565,7 +736,20 @@ void handle_logged_in_menu(int client_socket, const char *current_user) {
                 handle_challenge(client_socket, current_user);
                 break;
 
+
             case 3:
+                handle_add_bio(client_socket, current_user);
+                break;
+
+            case 4:
+                handle_see_bio(client_socket, current_user);
+                break;
+
+            case 5:
+                handle_see_bio_by_username(client_socket);
+                break;
+
+            case 13:
                 handle_logout(client_socket, current_user);
                 return;
 
