@@ -320,7 +320,7 @@ void play_game(Game *game, int client_socket, int challenged_socket) {
 
         send_message(client_socket, buffer);
 
-        new_game->current_turn = (new_game->current_turn == 1) ? 2 : 1;
+        game->current_turn = (game->current_turn == 1) ? 2 : 1;
     }
 }
 
