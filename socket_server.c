@@ -169,25 +169,16 @@ void send_board(int client_socket, Player *player1, Player *player2) {
         player2 = temp_player;
     }
 
-    // Construct the board in text form to be sent over the socket
-    // Check the value of the pits just before sending the board
-    for (int i = 0; i < 6; i++) {
-        printf("player1->pits[%d]: %d\n", i, player1->pits[i]);
-        printf("player2->pits[%d]: %d\n", i, player2->pits[i]);
-    }
-
 // Send board to client
     snprintf(board, sizeof(board),
              "\nGame Board:\n"
              "      +----+----+----+----+----+----+----+\n"
-             "      | %2d | %2d | %2d | %2d | %2d | %2d | %2d |\n"
+             "      | %2d | %2d | %2d | %2d | %2d | %2d |\n"
              "      +----+----+----+----+----+----+----+\n"
-             " Store: %2d                      Store: %2d\n"
              "      +----+----+----+----+----+----+----+\n"
-             "      | %2d | %2d | %2d | %2d | %2d | %2d | %2d |\n"
+             "      | %2d | %2d | %2d | %2d | %2d | %2d |\n"
              "      +----+----+----+----+----+----+----+\n",
-             player2->pits[5], player2->pits[4], player2->pits[3], player2->pits[2], player2->pits[1], player2->pits[0], player2->store,
-             player1->store,
+             player2->pits[5], player2->pits[4], player2->pits[3], player2->pits[2], player2->pits[1], player2->pits[0],
              player1->pits[0], player1->pits[1], player1->pits[2], player1->pits[3], player1->pits[4], player1->pits[5]
     );
 
@@ -222,6 +213,7 @@ void initialize_game(int client_socket, int challenged_socket, const char *curre
     for (int i = 0; i < PITS; i++) {
         new_game->player1->pits[i] = INITIAL_SEEDS;
         new_game->player2->pits[i] = INITIAL_SEEDS;
+        send(client_socket, )
     }
     new_game->player1->store = 0;
     new_game->player2->store = 0;
