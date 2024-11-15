@@ -62,6 +62,8 @@ void handle_challenge(int client_socket, const char *current_user);
 void handle_challenged_response(char response, int client_socket, int challenged_socket, const char *current_user,
                                 int challenged_index);
 
+void clean_up_game(Game *game);
+
 bool get_challenged_user(int client_socket, const char *current_user, char *challenge_user);
 
 bool is_valid_challenge(int client_socket, const char *current_user, const char *challenge_user, int challenged_index);
@@ -80,13 +82,231 @@ void invalid_response(int client_socket, int challenged_socket);
 
 void initialize_game(int client_socket, int challenged_socket, const char *current_user, int challenged_index);
 
+int capture_seeds(Player *current_player, Player *opponent, int last_pit);
+
 void send_board(int client_socket, Player *player1, Player *player2);
+
+void send_boards(int current_socket, int opponent_socket, Player *current, Player *opponent);
 
 void send_message(int socket, const char *message);
 
 void handle_logout(int client_socket, const char *current_user);
 
-void play_game(Game *new_game, int client_socket, int challenged_socket);
+void play_game(Game *new_game);
+
+int is_game_over(Player player1, Player player2);
+
+int dead(Player player);
+
+int is_savior(Player player);
+
+void add_move(Player *player, int pit_index, int seeds_before_move);
+
+int distribute_seeds(Player *current_player, Player *opponent, int pit_index);
+
+void end_game(Player *player1, Player *player2, int result, Game *game);
+
+void player_turn(Player *current_player, Player *opponent, Game *game);
+
+void end_game(Player *player1, Player *player2, int result, Game *game) {
+    char winner[NAME_LENGTH];
+    if (result == 0) {
+        // Tie condition
+        snprintf(winner, sizeof(winner), "It's a tie!\n");
+    } else if (result == 1) {
+        // Player 1 wins
+        snprintf(winner, sizeof(winner), "%s wins!\n", player1->pseudo);
+    } else {
+        // Player 2 wins
+        snprintf(winner, sizeof(winner), "%s wins!\n", player2->pseudo);
+    }
+
+    // Send the result to both players
+    send_message(player1->socket, winner);
+    send_message(player2->socket, winner);
+
+    // Clean up game state
+    clean_up_game(game);
+
+    // Exit the game loop or close sockets if necessary
+}
+
+int capture_seeds(Player *current_player, Player *opponent, int last_pit) {
+    char message[BUFFER_SIZE];
+    int captured_seeds = 0;
+
+    // Notify both players that we are checking for captures
+    snprintf(message, sizeof(message), "Checking for captures at pit %d...\n", last_pit);
+    send_message(current_player->socket, message);
+    send_message(opponent->socket, message);
+
+    while (last_pit >= 0 && (opponent->pits[last_pit] == 2 || opponent->pits[last_pit] == 3)) {
+        // Capture the seeds from the opponent's pit
+        captured_seeds += opponent->pits[last_pit];
+        opponent->pits[last_pit] = 0; // Empty the opponent's pit
+
+        last_pit--; // Move to the next pit on the opponent's side
+    }
+
+    // Add the captured seeds to the current player's store
+    current_player->store += captured_seeds;
+
+    // Notify both players about the capture result
+    snprintf(message, sizeof(message), "%s captured %d seeds. Their store now has %d seeds.\n",
+             current_player->pseudo, captured_seeds, current_player->store);
+    send_message(current_player->socket, message);
+
+    snprintf(message, sizeof(message), "%s captured seeds from your side. Their store now has %d seeds.\n",
+             current_player->pseudo, current_player->store);
+    send_message(opponent->socket, message);
+
+    return captured_seeds;
+}
+
+void player_turn(Player *current_player, Player *opponent, Game *game) {
+    int pit_index;
+
+    // Display the current board state
+    send_boards(current_player->socket, opponent->socket, current_player, opponent);
+
+    // Prompt the player to choose a pit
+    send_message(current_player->socket, "Your turn! Choose a pit (1-6): ");
+    char buffer[BUFFER_SIZE];
+    bzero(buffer, BUFFER_SIZE);
+
+    int bytes_received = recv(current_player->socket, buffer, BUFFER_SIZE - 1, 0);
+    if (bytes_received <= 0) {
+        send_message(current_player->socket, "You have disconnected. Game over.\n");
+        send_message(opponent->socket, "Your opponent disconnected. Game over.\n");
+        return;
+    }
+
+    pit_index = atoi(buffer) - 1;  // Convert to 0-indexed
+    if (pit_index < 0 || pit_index >= PITS || current_player->pits[pit_index] == 0) {
+        send_message(current_player->socket, "Invalid pit selection. Please choose again.\n");
+        player_turn(current_player, opponent, game); // Recursively ask for valid input
+        return;
+    }
+
+    add_move(current_player, pit_index, current_player->pits[pit_index]); // Save the move
+    int last_pit = distribute_seeds(current_player, opponent, pit_index); // Distribute seeds
+
+    // Check for special conditions (capture seeds, skip turn, etc.)
+
+
+    // If game over conditions are met, end the game
+    if (is_game_over(*current_player, *opponent)) {
+        end_game(current_player, opponent,
+                 current_player->store > opponent->store ? 1 : (current_player->store < opponent->store ? -1 : 0),
+                 game);
+        return;
+    }
+
+    // Otherwise, end the current player's turn and pass to the opponent
+    send_message(current_player->socket, "Your turn is over.\n");
+    send_message(opponent->socket, "Your turn!\n");
+}
+
+void tie(Player *current_player, Player *opponent, Game game) {
+    char response;
+    send_message(current_player->socket, "Do you want to propose a tie? (y/n): ");
+    recv(current_player->socket, &response, 1, 0); // Get response from player
+
+    if (response == 'y' || response == 'Y') {
+        send_message(opponent->socket, "Your opponent proposed a tie. Do you accept? (y/n): ");
+        recv(opponent->socket, &response, 1, 0); // Get response from opponent
+
+        if (response == 'y' || response == 'Y') {
+            end_game(current_player, opponent, 0, &game); // Tie the game
+        } else {
+            send_message(current_player->socket, "The tie proposal was rejected. The game continues.\n");
+        }
+    }
+}
+
+void add_move(Player *player, int pit_index, int seeds_before_move) {
+    Move *new_move = (Move *) malloc(sizeof(Move));
+    if (!new_move) {
+        perror("Failed to allocate memory for move");
+        exit(1);
+    }
+
+    new_move->pit_index = pit_index;
+    new_move->seeds_before_move = seeds_before_move;
+    new_move->next = NULL;
+
+    if (!player->move_history) {
+        player->move_history = new_move;
+    } else {
+        Move *current = player->move_history;
+        while (current->next) {
+            current = current->next;
+        }
+        current->next = new_move;
+    }
+}
+
+int distribute_seeds(Player *current_player, Player *opponent, int pit_index) {
+    int curr_pit = pit_index;
+    pit_index--;
+    int seeds = current_player->pits[pit_index];
+    current_player->pits[pit_index] = 0;
+
+    while (1) {
+        for (; curr_pit < PITS && seeds > 0; curr_pit++) {
+            if (pit_index == curr_pit) continue;
+            seeds--;
+            current_player->pits[curr_pit]++;
+        }
+        if (seeds == 0) break;
+        curr_pit = 0;
+        for (; curr_pit < PITS && seeds > 0; curr_pit++) {
+            seeds--;
+            opponent->pits[curr_pit]++;
+            if (seeds == 0) {
+                capture_seeds(current_player, opponent, curr_pit);
+            }
+
+        }
+        curr_pit = 0;
+        if (seeds == 0) break;
+    }
+
+    return current_pit; // Return the last pit index
+}
+
+int is_game_over(Player player1, Player player2) {
+    if (player1.store >= 25 || player2.store >= 25) {
+        return 1; // Game is over
+    }
+
+    if (dead(player1) && !is_savior(player2)) {
+        return 1; // Player 1 has no seeds and Player 2 is not a savior
+    } else if (dead(player2) && !is_savior(player1)) {
+        return 1; // Player 2 has no seeds and Player 1 is not a savior
+    }
+
+    return 0; // Game continues
+}
+
+// Function to check if a player is dead (no seeds left in pits)
+int dead(Player player) {
+    for (int i = 0; i < PITS; i++) {
+        if (player.pits[i] > 0) {
+            return 0; // Player is not dead
+        }
+    }
+    return 1; // Player is dead
+}
+
+// Function to check if a player can act as a savior (repopulate seeds)
+int is_savior(Player player) {
+    int total_seeds = 0;
+    for (int i = 0; i < PITS; i++) {
+        total_seeds += player.pits[i];
+    }
+    return total_seeds > 1; // Can act as savior if more than 1 seed
+}
 
 void handle_challenge(int client_socket, const char *current_user) {
     char challenge_user[50];
@@ -275,50 +495,24 @@ void initialize_game(int client_socket, int challenged_socket, const char *curre
 
     send_game_start_message(client_socket, challenged_socket, new_game->current_turn);
 
-    play_game(new_game, client_socket, challenged_socket);
+    play_game(new_game);
 
     clean_up_game(new_game);
 
 }
 
-void play_game(Game *game, int client_socket, int challenged_socket) {
+void play_game(Game *game) {
     while (true) {
         Player *current_player, *opponent_player;
-        int current_socket, opponent_socket;
         if (game->current_turn == 1) {
             current_player = game->player1;
             opponent_player = game->player2;
-            current_socket = client_socket;
-            opponent_socket = challenged_socket;
         } else {
             current_player = game->player2;
             opponent_player = game->player1;
-            current_socket = challenged_socket;
-            opponent_socket = client_socket;
         }
 
-
-        // Send board and prompt for pit selection
-        send_boards(current_socket, opponent_socket, current_player, opponent_player);
-        send_message(current_socket, "Your turn! Select a pit (1-6):\n");
-
-        char buffer[BUFFER_SIZE];
-        bzero(buffer, BUFFER_SIZE);
-        int bytes_received = recv(current_socket, buffer, BUFFER_SIZE - 1, 0);
-
-        if (bytes_received <= 0) {
-            send_message(client_socket, "Opponent disconnected. Game over.\n");
-            send_message(challenged_socket, "Opponent disconnected. Game over.\n");
-            break;
-        }
-
-        int pit_index = atoi(buffer) - 1;
-        if (!validate_pit_selection(current_player, pit_index)) {
-            send_message(current_socket, "Invalid pit selection. Try again.\n");
-            continue;
-        }
-
-        send_message(client_socket, buffer);
+        player_turn(current_player, opponent_player, game);
 
         game->current_turn = (game->current_turn == 1) ? 2 : 1;
     }
