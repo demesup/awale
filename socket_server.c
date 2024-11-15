@@ -86,6 +86,8 @@ void send_message(int socket, const char *message);
 
 void handle_logout(int client_socket, const char *current_user);
 
+void play_game(Game *new_game, int client_socket, int challenged_socket);
+
 void handle_challenge(int client_socket, const char *current_user) {
     char challenge_user[50];
 
@@ -182,10 +184,13 @@ void accept_challenge(int client_socket, int challenged_socket, const char *curr
     initialize_game(client_socket, challenged_socket, current_user, challenged_index);
 }
 
+void send_boards(int current_socket, int opponent_socket, Player *current, Player *opponent) {
+    send_board(current_socket, current, opponent);
+    send_board(opponent_socket, opponent, current);
+}
 
 void send_board(int client_socket, Player *player1, Player *player2) {
     char board[BUFFER_SIZE];
-    char temp[BUFFER_SIZE];
 
 // Send board to client
     snprintf(board, sizeof(board),
@@ -197,9 +202,11 @@ void send_board(int client_socket, Player *player1, Player *player2) {
              "      | %2d | %2d | %2d | %2d | %2d | %2d |Store: %2d\n"
              "      +----+----+----+----+----+----+ %s\n",
              player2->pseudo,
-             player2->pits[5], player2->pits[4], player2->pits[3], player2->pits[2], player2->pits[1], player2->pits[0],
+             player2->pits[5], player2->pits[4], player2->pits[3], player2->pits[2], player2->pits[1],
+             player2->pits[0],
              player2->store,
-             player1->pits[0], player1->pits[1], player1->pits[2], player1->pits[3], player1->pits[4], player1->pits[5],
+             player1->pits[0], player1->pits[1], player1->pits[2], player1->pits[3], player1->pits[4],
+             player1->pits[5],
              player1->store,
              player1->pseudo
     );
@@ -222,6 +229,31 @@ void invalid_response(int client_socket, int challenged_socket) {
     send_message(challenged_socket, "Invalid response. Challenge declined.\n");
 }
 
+void initialize_board(Game *game) {
+    for (int i = 0; i < PITS; i++) {
+        game->player1->pits[i] = INITIAL_SEEDS;
+        game->player2->pits[i] = INITIAL_SEEDS;
+    }
+    game->player1->store = 0;
+    game->player2->store = 0;
+}
+
+void send_game_start_message(int client_socket, int challenged_socket, int current_turn) {
+    if (current_turn == 1) {
+        send_message(client_socket, "Game is starting! You go first.\n");
+        send_message(challenged_socket, "Game is starting! Wait for your turn.\n");
+    } else {
+        send_message(challenged_socket, "Game is starting! You go first.\n");
+        send_message(client_socket, "Game is starting! Wait for your turn.\n");
+    }
+}
+
+void clean_up_game(Game *game) {
+    game->player1->in_game = false;
+    game->player2->in_game = false;
+    free(game);
+}
+
 void initialize_game(int client_socket, int challenged_socket, const char *current_user, int challenged_index) {
     Game *new_game = malloc(sizeof(Game));
     if (!new_game) {
@@ -235,27 +267,61 @@ void initialize_game(int client_socket, int challenged_socket, const char *curre
     new_game->player2 = &players[challenged_index];
 
     // Initialize pits for both players
-    for (int i = 0; i < PITS; i++) {
-        new_game->player1->pits[i] = INITIAL_SEEDS;
-        new_game->player2->pits[i] = INITIAL_SEEDS;
-    }
-    new_game->player1->store = 0;
-    new_game->player2->store = 0;
+    initialize_board(new_game);
 
     // Player 1 starts
     srand(time(NULL));
     new_game->current_turn = (rand() % 2) + 1;
-    if (new_game->current_turn == 1) {
-        send_message(client_socket, "Game is starting! You go first.\n");
-        send_message(challenged_socket, "Game is starting! Wait for your turn.\n");
-    } else {
-        send_message(challenged_socket, "Game is starting! You go first.\n");
-        send_message(client_socket, "Game is starting! Wait for your turn.\n");
+
+    send_game_start_message(client_socket, challenged_socket, new_game->current_turn);
+
+    play_game(new_game, client_socket, challenged_socket);
+
+    clean_up_game(new_game);
+
+}
+
+void play_game(Game *game, int client_socket, int challenged_socket) {
+    while (true) {
+        Player *current_player, *opponent_player;
+        int current_socket, opponent_socket;
+        if (game->current_turn == 1) {
+            *current_player = game->player1;
+            *opponent_player = game->player2;
+            current_socket = client_socket;
+            opponent_socket = challenged_socket;
+        } else {
+            *current_player = game->player2;
+            *opponent_player = game->player1;
+            current_socket = challenged_socket;
+            opponent_socket = client_socket;
+        }
+
+
+        // Send board and prompt for pit selection
+        send_boards(current_socket, opponent_socket, current_player, opponent_player);
+        send_message(current_socket, "Your turn! Select a pit (1-6):\n");
+
+        char buffer[BUFFER_SIZE];
+        bzero(buffer, BUFFER_SIZE);
+        int bytes_received = recv(current_socket, buffer, BUFFER_SIZE - 1, 0);
+
+        if (bytes_received <= 0) {
+            send_message(client_socket, "Opponent disconnected. Game over.\n");
+            send_message(challenged_socket, "Opponent disconnected. Game over.\n");
+            break;
+        }
+
+        int pit_index = atoi(buffer) - 1;
+        if (!validate_pit_selection(current_player, pit_index)) {
+            send_message(current_socket, "Invalid pit selection. Try again.\n");
+            continue;
+        }
+
+        send_message(client_socket, buffer);
+
+        new_game->current_turn = (new_game->current_turn == 1) ? 2 : 1;
     }
-
-    send_board(client_socket, new_game->player1, new_game->player2);
-    send_board(challenged_socket, new_game->player2, new_game->player1);
-
 }
 
 
