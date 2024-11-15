@@ -51,7 +51,36 @@ void load_players_from_file();
 int find_player_by_pseudo(const char *pseudo);
 void handle_visit(int client_socket);
 
+void handle_challenge(int client_socket, const char *current_user);
+void handle_challenged_response(char response, int client_socket, int challenged_socket, const char *current_user, int challenged_index);
+bool get_challenged_user(int client_socket, const char *current_user, char *challenge_user);
+bool is_valid_challenge(int client_socket, const char *current_user, const char *challenge_user, int challenged_index);
+bool is_valid_challenge(int client_socket, const char *current_user, const char *challenge_user, int challenged_index);
+void notify_challenge_sent(int client_socket);
+void process_challenge_response(int client_socket, const char *current_user, int challenged_index);
+void accept_challenge(int client_socket, int challenged_socket, const char *current_user, int challenged_index);
+void decline_challenge(int client_socket, int challenged_socket);
+void invalid_response(int client_socket, int challenged_socket);
+
+void initialize_game(int client_socket, int challenged_socket, const char *current_user, int challenged_index);
+
 void handle_challenge(int client_socket, const char *current_user) {
+    char challenge_user[50];
+
+    if (!get_challenged_user(client_socket, current_user, challenge_user)) {
+        return;
+    }
+
+    int challenged_index = find_player_by_pseudo(challenge_user);
+    if (!is_valid_challenge(client_socket, current_user, challenge_user, challenged_index)) {
+        return;
+    }
+
+    notify_challenge_sent(client_socket);
+    process_challenge_response(client_socket, current_user, challenged_index);
+}
+
+bool get_challenged_user(int client_socket, const char *current_user, char *challenge_user) {
     char buffer[BUFFER_SIZE];
     send(client_socket, "Enter the username to challenge:\n", 33, 0);
 
@@ -60,35 +89,39 @@ void handle_challenge(int client_socket, const char *current_user) {
     if (bytes_received <= 0) {
         printf("Client disconnected.\n");
         close(client_socket);
-        return;
+        return false;
     }
 
     buffer[bytes_received] = '\0';
-    char challenge_user[50];
     sscanf(buffer, "%s", challenge_user);
+
     if (strcmp(current_user, challenge_user) == 0) {
         send(client_socket, "You cannot challenge yourself!\n", 30, 0);
-        return;
+        return false;
     }
+    return true;
+}
 
-    int challenged_index = find_player_by_pseudo(challenge_user);
+bool is_valid_challenge(int client_socket, const char *current_user, const char *challenge_user, int challenged_index) {
     if (challenged_index < 0 || !players[challenged_index].is_online) {
         send(client_socket, "The player is not online or does not exist.\n", 44, 0);
-        return;
+        return false;
     }
+    return true;
+}
 
-    // Notify the challenger that the challenge has been sent
+void notify_challenge_sent(int client_socket) {
     send(client_socket, "Challenge sent. Waiting for response...\n", 40, 0);
+}
 
-
-    // Notify the challenged player about the challenge
+void process_challenge_response(int client_socket, const char *current_user, int challenged_index) {
     int challenged_socket = players[challenged_index].socket;
     char challenge_notification[BUFFER_SIZE];
     snprintf(challenge_notification, sizeof(challenge_notification),
              "%s is challenging you! Do you accept? (1/A/a to accept, 2/D/d to decline)\n", current_user);
     send(challenged_socket, challenge_notification, strlen(challenge_notification), 0);
 
-
+    char buffer[BUFFER_SIZE];
     bzero(buffer, BUFFER_SIZE);
     int challenged_response = recv(challenged_socket, buffer, BUFFER_SIZE - 1, 0);
     if (challenged_response <= 0) {
@@ -97,57 +130,69 @@ void handle_challenge(int client_socket, const char *current_user) {
     }
 
     buffer[challenged_response] = '\0';
-    if (buffer[0] == '1' || buffer[0] == 'A' || buffer[0] == 'a') {
-        // Challenged player accepts the challenge
-        send(challenged_socket, "You accepted the challenge!\n", 28, 0);
-        send(client_socket, "Your challenge has been accepted!\n", 34, 0);
+    handle_challenged_response(buffer[0], client_socket, challenged_socket, current_user, challenged_index);
+}
 
-        // Set both players as being in a game
-        players[find_player_by_pseudo(current_user)].in_game = true;
-        players[challenged_index].in_game = true;
-
-        Game *new_game = malloc(sizeof(Game));
-        if (!new_game) {
-            send(client_socket, "Failed to start the game due to server error.\n", 46, 0);
-            send(challenged_socket, "Failed to start the game due to server error.\n", 46, 0);
-            return;
-        }
-
-// Assign players to the game
-        new_game->player1 = &players[find_player_by_pseudo(current_user)];
-        new_game->player2 = &players[challenged_index];
-
-// Initialize pits for both players
-        for (int i = 0; i < PITS; i++) {
-            new_game->player1->pits[i] = INITIAL_SEEDS;
-            new_game->player2->pits[i] = INITIAL_SEEDS;
-        }
-        new_game->player1->store = 0;
-        new_game->player2->store = 0;
-
-// Player 1 starts
-        new_game->current_turn = 1;
-
-// Notify players about game start
-        send(client_socket, "Game is starting! You go first.\n", 32, 0);
-        send(challenged_socket, "Game is starting! Wait for your turn.\n", 38, 0);
-
-        // TODO: START GAME
-
-        // Optionally, proceed to start the game...
-    } else if (buffer[0] == '2' || buffer[0] == 'D' || buffer[0] == 'd') {
-        // Challenged player declines the challenge
-        send(client_socket, "Your challenge has been declined.\n", 34, 0);
-        send(challenged_socket, "You declined the challenge.\n", 28, 0);
+void handle_challenged_response(char response, int client_socket, int challenged_socket, const char *current_user, int challenged_index) {
+    if (response == '1' || response == 'A' || response == 'a') {
+        accept_challenge(client_socket, challenged_socket, current_user, challenged_index);
+    } else if (response == '2' || response == 'D' || response == 'd') {
+        decline_challenge(client_socket, challenged_socket);
     } else {
-        // Invalid response from challenged player
-        send(client_socket, "Invalid response. Challenge declined.\n", 38, 0);
-        send(challenged_socket, "Invalid response. Challenge declined.\n", 38, 0);
+        invalid_response(client_socket, challenged_socket);
+    }
+}
+
+void accept_challenge(int client_socket, int challenged_socket, const char *current_user, int challenged_index) {
+    send(challenged_socket, "You accepted the challenge!\n", 28, 0);
+    send(client_socket, "Your challenge has been accepted!\n", 34, 0);
+
+    // Set players as in a game
+    players[find_player_by_pseudo(current_user)].in_game = true;
+    players[challenged_index].in_game = true;
+
+    initialize_game(client_socket, challenged_socket, current_user, challenged_index);
+}
+
+void decline_challenge(int client_socket, int challenged_socket) {
+    send(client_socket, "Your challenge has been declined.\n", 34, 0);
+    send(challenged_socket, "You declined the challenge.\n", 28, 0);
+}
+
+void invalid_response(int client_socket, int challenged_socket) {
+    send(client_socket, "Invalid response. Challenge declined.\n", 38, 0);
+    send(challenged_socket, "Invalid response. Challenge declined.\n", 38, 0);
+}
+
+void initialize_game(int client_socket, int challenged_socket, const char *current_user, int challenged_index) {
+    Game *new_game = malloc(sizeof(Game));
+    if (!new_game) {
+        send(client_socket, "Failed to start the game due to server error.\n", 46, 0);
+        send(challenged_socket, "Failed to start the game due to server error.\n", 46, 0);
+        return;
     }
 
+    // Assign players to the game
+    new_game->player1 = &players[find_player_by_pseudo(current_user)];
+    new_game->player2 = &players[challenged_index];
 
-    pthread_mutex_unlock(&player_mutex);
+    // Initialize pits for both players
+    for (int i = 0; i < PITS; i++) {
+        new_game->player1->pits[i] = INITIAL_SEEDS;
+        new_game->player2->pits[i] = INITIAL_SEEDS;
+    }
+    new_game->player1->store = 0;
+    new_game->player2->store = 0;
+
+    // Player 1 starts
+    new_game->current_turn = 1;
+
+    // Notify players
+    send(client_socket, "Game is starting! You go first.\n", 32, 0);
+    send(challenged_socket, "Game is starting! Wait for your turn.\n", 38, 0);
 }
+
+
 
 void handle_logout(int client_socket, const char *current_user) {
     send(client_socket, "Logging out...\n", 16, 0);
