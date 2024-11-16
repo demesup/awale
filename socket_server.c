@@ -19,6 +19,8 @@
 #define NAME_LENGTH 50
 #define MAX_BIO_LINES 10
 #define MAX_BIO_LENGTH 100
+#define HASH_SIZE 256 \
+
 
 typedef struct Move {
     int pit_index;            // Pit index of the move
@@ -28,7 +30,7 @@ typedef struct Move {
 
 typedef struct {
     char pseudo[50];
-    char password[50];
+    char password[HASH_SIZE];
     int pits[PITS];
     int store;
     Move *move_history;
@@ -120,6 +122,26 @@ void handle_see_bio(int client_socket, const char *current_user);
 void handle_see_bio_by_username(int client_socket);
 
 void save_or_update_bio(const char *username, const char *bio);
+
+void hash_password(const char *password, char *hash_result);
+
+int compare_hashes(const char *hash1, const char *hash2);
+
+int compare_hashes(const char *hash1, const char *hash2) {
+    return strcmp(hash1, hash2) == 0;
+}
+
+
+void hash_password(const char *password, char *hash_result) {
+    unsigned int hash = 0;
+    for (int i = 0; password[i] != '\0'; i++) {
+        hash = (hash * 31 + password[i]) % HASH_SIZE;  // Simple hash logic
+    }
+
+    // Convert hash to a string representation
+    snprintf(hash_result, HASH_SIZE, "%u", hash);
+}
+
 
 void handle_see_bio_by_username(int client_socket) {
     char buffer[BUFFER_SIZE];
@@ -837,8 +859,12 @@ void handle_registration(int client_socket, char *pseudo, char *password) {
     // Register the new player
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!players[i].is_online && players[i].pseudo[0] == '\0') {
+
+            char hashed_password[HASH_SIZE];
+            hash_password(password, hashed_password);
+
             strcpy(players[i].pseudo, pseudo);
-            strcpy(players[i].password, password);
+            strcpy(players[i].password, hashed_password);
             players[i].socket = client_socket;
             players[i].is_online = true;
             players[i].in_game = false;
@@ -878,8 +904,10 @@ void handle_login(int client_socket, char *pseudo, char *password) {
         }
 
         // Step 3: Verify password
-        if (strcmp(players[player_index].password, password) != 0) {
-            // If password is incorrect
+        char hashed_password[HASH_SIZE];
+        hash_password(password, hashed_password);  // Hash the input password
+
+        if (!compare_hashes(players[player_index].password, hashed_password)) {
             send_message(client_socket, "Incorrect password!\n");
             pthread_mutex_unlock(&player_mutex);  // Unlock mutex before returning
             return;
