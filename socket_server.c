@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <time.h>
+
 
 #define MAX_PLAYERS 100
 #define BUFFER_SIZE 1024
@@ -822,8 +824,6 @@ void handle_registration(int client_socket, char *pseudo, char *password) {
         pthread_mutex_lock(&player_mutex);
         return;
     }
-
-    pthread_mutex_lock(&player_mutex);
 
     // Check if pseudo already exists among online players
     for (int i = 0; i < MAX_PLAYERS; i++) {
