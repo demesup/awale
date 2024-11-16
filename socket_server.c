@@ -12,6 +12,7 @@
 
 
 #define MAX_PLAYERS 100
+#define MAX_GAMES 50
 #define BUFFER_SIZE 1024
 #define PLAYER_FILE "players.txt"
 #define PITS 6  // Number of pits per player
@@ -43,61 +44,19 @@ typedef struct {
 typedef struct {
     Player *player1;
     Player *player2;
-    int current_turn; // 1 for player1, 2 for player2
+    int current_turn;
+    Player observer[MAX_PLAYERS];
 } Game;
 
 Player players[MAX_PLAYERS];
+Game *active_games[MAX_GAMES];
+int active_game_count = 0;
 pthread_mutex_t player_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// Function prototypes
-void handle_registration(int client_socket, char *pseudo, char *password);
-
-void handle_login(int client_socket, char *pseudo, char *password);
-
-void send_online_players(int client_socket);
-
-void save_player_to_file(Player *player);
-
-void load_players_from_file();
-
-int find_player_by_pseudo(const char *pseudo);
-
-void handle_visit(int client_socket);
-
-void handle_challenge(int client_socket, const char *current_user);
-
-void handle_challenged_response(char response, int client_socket, int challenged_socket, const char *current_user,
-                                int challenged_index);
-
-void clean_up_game(Game *game);
-
-bool get_challenged_user(int client_socket, const char *current_user, char *challenge_user);
-
-bool is_valid_challenge(int client_socket, const char *current_user, const char *challenge_user, int challenged_index);
-
-bool is_valid_challenge(int client_socket, const char *current_user, const char *challenge_user, int challenged_index);
-
-void notify_challenge_sent(int client_socket);
-
-void process_challenge_response(int client_socket, const char *current_user, int challenged_index);
-
-void accept_challenge(int client_socket, int challenged_socket, const char *current_user, int challenged_index);
-
-void decline_challenge(int client_socket, int challenged_socket);
-
-void invalid_response(int client_socket, int challenged_socket);
-
-void initialize_game(int client_socket, int challenged_socket, const char *current_user, int challenged_index);
+/** GAME */
+void initialize_game(Player *player1, Player *player2);
 
 int capture_seeds(Player *current_player, Player *opponent, int last_pit);
-
-void send_board(int client_socket, Player *player1, Player *player2);
-
-void send_boards(int current_socket, int opponent_socket, Player *current, Player *opponent);
-
-void send_message(int socket, const char *message);
-
-void handle_logout(int client_socket, const char *current_user);
 
 void play_game(Game *new_game);
 
@@ -115,17 +74,113 @@ void end_game(Player *player1, Player *player2, int result, Game *game);
 
 void player_turn(Player *current_player, Player *opponent, Game *game);
 
-void handle_add_bio(int client_socket, const char *current_user);
+bool add_game(Game *new_game);
 
-void handle_see_bio(int client_socket, const char *current_user);
+void remove_game(Game *game);
+
+/** OPTION */
+void send_online_players(Player *player);
+
+void send_active_games(Player *player);
+
+void handle_challenge(Player *player);
+
+void handle_logout(Player *player);
+
+void handle_logout_by_socket(int client_socket, const char *current_user);
+
+void handle_observe(Player *player);
+
+
+/** CHALLENGE */
+bool get_challenged_user(Player *player, char *challenge_user);
+
+bool is_valid_challenge(Player *player, Player *challenged);
+
+void notify_challenge_sent(int socket);
+
+void handle_challenged_response(char response, Player *player, Player *challenged);
+
+void process_challenge_response(Player *player, Player *challenged);
+
+void accept_challenge(Player *player, Player *challenged);
+
+void decline_challenge(int client_socket, int challenged_socket);
+
+void invalid_response(int client_socket, int challenged_socket);
+
+/** BIO */
+
+void handle_add_bio(Player *player);
+
+void handle_see_bio(Player *player);
 
 void handle_see_bio_by_username(int client_socket);
 
-void save_or_update_bio(const char *username, const char *bio);
+void save_or_update_bio(int player_found, const char *bio);
+
+/** LOGIN/REGISTER */
+void handle_visit(int client_socket);
+
+void handle_logged_in_menu(Player *player);
+
+void handle_registration(int client_socket, char *pseudo, char *password);
+
+void handle_login(int client_socket, char *pseudo, char *password);
+
+/** HASH */
 
 void hash_password(const char *password, char *hash_result);
 
 int compare_hashes(const char *hash1, const char *hash2);
+
+/** FILE **/
+void save_player_to_file(Player *player);
+
+void load_players_from_file();
+
+/** UTILS */
+Player *find_player_by_pseudo(const char *pseudo);
+
+void clean_up_game(Game *game);
+
+void send_board(int socket, Player *player1, Player *player2);
+
+void send_boards_players(Player *current, Player *opponent);
+
+void send_boards(Game *game);
+
+void send_message(int socket, const char *message);
+
+/** ACTUAL CODE */
+void remove_game(Game *game) {
+    for (int i = 0; i < active_game_count; i++) {
+        if (active_games[i] == game) {
+            // Shift all games after the found game to fill the gap
+            for (int j = i; j < active_game_count - 1; j++) {
+                active_games[j] = active_games[j + 1];
+            }
+            active_game_count--;
+            break;
+        }
+    }
+}
+
+void handle_observe(Player *player) {
+    send_active_games(player);
+
+}
+
+
+bool add_game(Game *new_game) {
+    if (active_game_count >= MAX_GAMES) {
+        return false; // Cannot add more games, array is full
+    }
+
+    active_games[active_game_count++] = new_game;
+    return true;
+}
+
 
 int compare_hashes(const char *hash1, const char *hash2) {
     return strcmp(hash1, hash2) == 0;
@@ -177,38 +232,20 @@ void handle_see_bio_by_username(int client_socket) {
 }
 
 
-void handle_see_bio(int client_socket, const char *current_user) {
+void handle_see_bio(Player *player) {
     char buffer[BUFFER_SIZE] = "Your bio:\n";
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (strcmp(players[i].pseudo, current_user) == 0) {
-            if (strlen(players[i].bio) > 0) {
-                strncat(buffer, players[i].bio, sizeof(buffer) - strlen(buffer) - 1);
-            } else {
-                strncat(buffer, "You haven't added a bio yet.\n", sizeof(buffer) - strlen(buffer) - 1);
-            }
-            break;
-        }
+
+    if (strlen(player->bio) > 0) {
+        strncat(buffer, player->bio, sizeof(buffer) - strlen(buffer) - 1);
+    } else {
+        strncat(buffer, "You haven't added a bio yet.\n", sizeof(buffer) - strlen(buffer) - 1);
     }
-    send_message(client_socket, buffer);
+
+    send_message(player->socket, buffer);
 }
 
 
-void save_or_update_bio(const char *username, const char *bio) {
-    // Step 1: Find the player by username
-    int player_found = -1;
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (strcmp(players[i].pseudo, username) == 0) {
-            player_found = i;
-            break;
-        }
-    }
-
-    if (player_found == -1) {
-        printf("Player with username '%s' not found.\n", username);
-        return;
-    }
-
-    // Step 2: Update the bio for the found player
+void save_or_update_bio(int player_found, const char *bio) {
     strncpy(players[player_found].bio, bio, MAX_BIO_LENGTH - 1);
     players[player_found].bio[MAX_BIO_LENGTH - 1] = '\0'; // Ensure null termination
 
@@ -233,18 +270,18 @@ void save_or_update_bio(const char *username, const char *bio) {
     }
 
     fclose(file);
-    printf("Bio for player '%s' updated successfully.\n", username);
+    printf("Bio updated successfully.\n");
 }
 
 
-void handle_add_bio(int client_socket, const char *current_user) {
+void handle_add_bio(Player *player) {
     char buffer[BUFFER_SIZE];
-    send_message(client_socket, "Enter your bio (up to 10 lines, 100 chars each):\n");
+    send_message(player->socket, "Enter your bio (up to 10 lines, 100 chars each):\n");
 
     char new_bio[MAX_BIO_LINES * MAX_BIO_LENGTH] = "";
     for (int i = 0; i < MAX_BIO_LINES; i++) {
         bzero(buffer, BUFFER_SIZE);
-        int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+        int bytes_received = recv(player->socket, buffer, BUFFER_SIZE - 1, 0);
         if (bytes_received <= 0 || strncmp(buffer, "END", 3) == 0) break;  // User ends input with "END"
 
         strncat(new_bio, buffer, sizeof(new_bio) - strlen(new_bio) - 1);
@@ -252,17 +289,17 @@ void handle_add_bio(int client_socket, const char *current_user) {
     }
 
     // Save the bio to the player's file
-    save_or_update_bio(current_user, new_bio);
 
     // Update the in-memory player list
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (strcmp(players[i].pseudo, current_user) == 0) {
+        if (strcmp(players[i].pseudo, player->pseudo) == 0) {
             strncpy(players[i].bio, new_bio, sizeof(players[i].bio) - 1);
+            save_or_update_bio(i, new_bio);
             break;
         }
     }
 
-    send_message(client_socket, "Your bio has been updated.\n");
+    send_message(player->socket, "Your bio has been updated.\n");
 }
 
 
@@ -324,11 +361,8 @@ int capture_seeds(Player *current_player, Player *opponent, int last_pit) {
 void player_turn(Player *current_player, Player *opponent, Game *game) {
     int pit_index;
 
-    // Display the current board state
-    send_boards(current_player->socket, opponent->socket, current_player, opponent);
-
     // Prompt the player to choose a pit
-    send_message(current_player->socket, "Your turn! Choose a pit (1-6): ");
+    send_message(current_player->socket, "Your turn! Choose a pit (1-6):\n");
     char buffer[BUFFER_SIZE];
     bzero(buffer, BUFFER_SIZE);
 
@@ -348,6 +382,7 @@ void player_turn(Player *current_player, Player *opponent, Game *game) {
 
     add_move(current_player, pit_index, current_player->pits[pit_index]); // Save the move
     int last_pit = distribute_seeds(current_player, opponent, pit_index); // Distribute seeds
+    send_boards_players(current_player, opponent);
 
     // Check for special conditions (capture seeds, skip turn, etc.)
 
@@ -406,7 +441,6 @@ void add_move(Player *player, int pit_index, int seeds_before_move) {
 
 int distribute_seeds(Player *current_player, Player *opponent, int pit_index) {
     int curr_pit = pit_index;
-    pit_index--;
     int seeds = current_player->pits[pit_index];
     current_player->pits[pit_index] = 0;
 
@@ -466,108 +500,119 @@ int is_savior(Player player) {
     return total_seeds > 1; // Can act as savior if more than 1 seed
 }
 
-void handle_challenge(int client_socket, const char *current_user) {
+void handle_challenge(Player *player) {
     char challenge_user[50];
 
     printf("Challenge");
-    if (!get_challenged_user(client_socket, current_user, challenge_user)) {
+    if (!get_challenged_user(player, challenge_user)) {
         return;
     }
 
-    int challenged_index = find_player_by_pseudo(challenge_user);
-    if (!is_valid_challenge(client_socket, current_user, challenge_user, challenged_index)) {
+    Player *challenged = find_player_by_pseudo(challenge_user);
+    if (!is_valid_challenge(player, challenged)) {
         return;
     }
 
-    notify_challenge_sent(client_socket);
-    process_challenge_response(client_socket, current_user, challenged_index);
+    notify_challenge_sent(player->socket);
+    process_challenge_response(player, challenged);
 }
 
-bool get_challenged_user(int client_socket, const char *current_user, char *challenge_user) {
+bool get_challenged_user(Player *player, char *challenge_user) {
     char buffer[BUFFER_SIZE];
-    send_message(client_socket, "Enter the username to challenge:\n");
+    send_message(player->socket, "Enter the username to challenge:\n");
 
     bzero(buffer, BUFFER_SIZE);
-    int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+    int bytes_received = recv(player->socket, buffer, BUFFER_SIZE - 1, 0);
     if (bytes_received <= 0) {
-        handle_logout(client_socket, current_user);
+        handle_logout(player);
         return false;
     }
 
     buffer[bytes_received] = '\0';
     sscanf(buffer, "%s", challenge_user);
 
-    if (strcmp(current_user, challenge_user) == 0) {
-        send_message(client_socket, "You cannot challenge yourself!\n");
+    if (strcmp(player->pseudo, challenge_user) == 0) {
+        send_message(player->socket, "You cannot challenge yourself!\n");
         return false;
     }
     return true;
 }
 
-bool is_valid_challenge(int client_socket, const char *current_user, const char *challenge_user, int challenged_index) {
-    if (challenged_index < 0 || !players[challenged_index].is_online) {
-        send_message(client_socket, "The player is not online or does not exist.\n");
+bool is_valid_challenge(Player *player, Player *challenged) {
+    if (!challenged->is_online) {
+        send_message(player->socket, "The player is not online or does not exist.\n");
         return false;
     }
-    if (players[challenged_index].in_game) {
-        send_message(client_socket, "The player is already in game. If you want to observe type O/o/0");
+    if (challenged->in_game) {
+        send_message(player->socket, "The player is already in game. If you want to observe type O/o/0");
         return false;
     }
     return true;
 }
 
-void notify_challenge_sent(int client_socket) {
-    send_message(client_socket, "Challenge sent. Waiting for response...\n");
+void notify_challenge_sent(int socket) {
+    send_message(socket, "Challenge sent. Waiting for response...\n");
 }
 
-void process_challenge_response(int client_socket, const char *current_user, int challenged_index) {
-    int challenged_socket = players[challenged_index].socket;
+void process_challenge_response(Player *player, Player *challenged) {
     char challenge_notification[BUFFER_SIZE];
     snprintf(challenge_notification, sizeof(challenge_notification),
-             "%s is challenging you! Do you accept? (1/A/a to accept, 2/D/d to decline)\n", current_user);
-    send_message(challenged_socket, challenge_notification);
+             "%s is challenging you! Do you accept? (1/A/a to accept, 2/D/d to decline)\n", player->pseudo);
+    send_message(challenged->socket, challenge_notification);
 
     char buffer[BUFFER_SIZE];
     bzero(buffer, BUFFER_SIZE);
-    int challenged_response = recv(challenged_socket, buffer, BUFFER_SIZE - 1, 0);
+    int challenged_response = recv(challenged->socket, buffer, BUFFER_SIZE - 1, 0);
     if (challenged_response <= 0) {
         printf("Challenged player disconnected.\n");
         return;
     }
 
     buffer[challenged_response] = '\0';
-    handle_challenged_response(buffer[0], client_socket, challenged_socket, current_user, challenged_index);
+    handle_challenged_response(buffer[0], player, challenged);
 }
 
-void handle_challenged_response(char response, int client_socket, int challenged_socket, const char *current_user,
-                                int challenged_index) {
+void handle_challenged_response(char response, Player *player, Player *challenged) {
     if (response == '1' || response == 'A' || response == 'a') {
-        accept_challenge(client_socket, challenged_socket, current_user, challenged_index);
+        accept_challenge(player, challenged);
     } else if (response == '2' || response == 'D' || response == 'd') {
-        decline_challenge(client_socket, challenged_socket);
+        decline_challenge(player->socket, challenged->socket);
     } else {
-        invalid_response(client_socket, challenged_socket);
+        invalid_response(player->socket, challenged->socket);
         return;
     }
 }
 
-void accept_challenge(int client_socket, int challenged_socket, const char *current_user, int challenged_index) {
-    send_message(challenged_socket, "You accepted the challenge!\n");
-    send_message(client_socket, "Your challenge has been accepted!\n");
+void accept_challenge(Player *player, Player *challenged) {
+    send_message(challenged->socket, "You accepted the challenge!\n");
+    send_message(player->socket, "Your challenge has been accepted!\n");
 
     // Set players as in a game
-    players[find_player_by_pseudo(current_user)].in_game = true;
-    players[challenged_index].in_game = true;
+    player->in_game = true;
+    challenged->in_game = true;
 
-    initialize_game(client_socket, challenged_socket, current_user, challenged_index);
+    initialize_game(player, challenged);
 }
 
-void send_boards(int current_socket, int opponent_socket, Player *current, Player *opponent) {
-    send_board(current_socket, current, opponent);
-    send_board(opponent_socket, opponent, current);
+void send_boards_players(Player *current, Player *opponent) {
+    send_board(current->socket, current, opponent);
+    send_board(opponent->socket, opponent, current);
 }
 
-void send_board(int client_socket, Player *player1, Player *player2) {
+void send_boards(Game *game) {
+    send_board(game->player1->socket, game->player1, game->player2);
+    send_board(game->player2->socket, game->player2, game->player1);
+
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (game->observer[i].socket > 0) { // Ensure valid socket
+            send_board(game->observer[i].socket, game->player1, game->player2);
+        }
+    }
+    // send boards to all observers
+}
+
+
+void send_board(int socket, Player *player1, Player *player2) {
     char board[BUFFER_SIZE];
 
 // Send board to client
@@ -589,7 +634,7 @@ void send_board(int client_socket, Player *player1, Player *player2) {
              player1->pseudo
     );
 
-    send_message(client_socket, board);
+    send_message(socket, board);
 
 }
 
@@ -633,20 +678,23 @@ void clean_up_game(Game *game) {
     game->player2->in_game = false;
     game->player2->store = 0;
     game->player2->move_history = NULL;
+    remove_game(game);
     free(game);
 }
 
-void initialize_game(int client_socket, int challenged_socket, const char *current_user, int challenged_index) {
+void initialize_game(Player *player1, Player *player2) {
     Game *new_game = malloc(sizeof(Game));
-    if (!new_game) {
-        send_message(client_socket, "Failed to start the game due to server error.\n");
-        send_message(challenged_socket, "Failed to start the game due to server error.\n");
+    if (!add_game(new_game)) {
+        send_message(player1->socket, "Failed to start the game. Server capacity reached.\n");
+        send_message(player2->socket, "Failed to start the game. Server capacity reached.\n");
+        free(new_game);
         return;
     }
 
+
     // Assign players to the game
-    new_game->player1 = &players[find_player_by_pseudo(current_user)];
-    new_game->player2 = &players[challenged_index];
+    new_game->player1 = player1;
+    new_game->player2 = player2;
 
     // Initialize pits for both players
     initialize_board(new_game);
@@ -655,7 +703,8 @@ void initialize_game(int client_socket, int challenged_socket, const char *curre
     srand(time(NULL));
     new_game->current_turn = (rand() % 2) + 1;
 
-    send_game_start_message(client_socket, challenged_socket, new_game->current_turn);
+    send_game_start_message(player1->socket, player2->socket, new_game->current_turn);
+    send_boards_players(new_game->player1, new_game->player2);
 
     play_game(new_game);
 
@@ -681,44 +730,44 @@ void play_game(Game *game) {
 }
 
 
-void handle_logout(int client_socket, const char *current_user) {
-    send_message(client_socket, "Logging out...\n");
+void handle_logout(Player *player) {
+    send_message(player->socket, "Logging out...\n");
 
     pthread_mutex_lock(&player_mutex);
 
-    int player_index = find_player_by_pseudo(current_user);
-    if (player_index >= 0) {
-        players[player_index].is_online = false;
-        players[player_index].in_game = false;  // Ensure they are not in-game
-        players[player_index].socket = -1;     // Reset the socket
-    }
+    player->is_online = false;
+    player->in_game = false;  // Ensure they are not in-game
+    player->socket = -1;     // Reset the socket
+
 
     pthread_mutex_unlock(&player_mutex);
 
-    printf("Player logged out: %s\n", current_user);
+    printf("Player logged out: %s\n", player->pseudo);
 
-    close(client_socket);
+    close(player->socket);
     pthread_exit(NULL);
 }
 
-void handle_logged_in_menu(int client_socket, const char *current_user) {
+void handle_logged_in_menu(Player *player) {
     char buffer[BUFFER_SIZE];
 
     while (1) {
-        send_message(client_socket,
+        send_message(player->socket,
                      "\nMenu:\n"
                      "1. List all online players\n"
-                     "2. Challenge a player by username\n"
-                     "3. Add/retype bio\n"
-                     "4. See my bio\n"
-                     "5. See bio by username\n"
+                     "2. List all active games\n"
+                     "3. Challenge a player by username\n"
+                     "4. Observe a game\n"
+                     "5. Add/retype bio\n"
+                     "6. See my bio\n"
+                     "7. See bio by username\n"
                      "13. Logout\nEnter your choice:\n"
         );
 
         bzero(buffer, BUFFER_SIZE);
-        int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+        int bytes_received = recv(player->socket, buffer, BUFFER_SIZE - 1, 0);
         if (bytes_received <= 0) {
-            handle_logout(client_socket, current_user);
+            handle_logout(player);
             return;
         }
 
@@ -726,32 +775,39 @@ void handle_logged_in_menu(int client_socket, const char *current_user) {
 
         switch (choice) {
             case 1:
-                send_online_players(client_socket);
+                send_online_players(player);
                 break;
 
             case 2:
-                handle_challenge(client_socket, current_user);
+                send_active_games(player);
                 break;
 
-
             case 3:
-                handle_add_bio(client_socket, current_user);
+                handle_challenge(player);
                 break;
 
             case 4:
-                handle_see_bio(client_socket, current_user);
+                handle_observe(player);
                 break;
 
             case 5:
-                handle_see_bio_by_username(client_socket);
+                handle_add_bio(player);
+                break;
+
+            case 6:
+                handle_see_bio(player);
+                break;
+
+            case 7:
+                handle_see_bio_by_username(player->socket);
                 break;
 
             case 13:
-                handle_logout(client_socket, current_user);
+                handle_logout(player);
                 return;
 
             default:
-                send_message(client_socket, "Invalid choice. Try again.\n");
+                send_message(player->socket, "Invalid choice. Try again.\n");
                 break;
         }
     }
@@ -777,7 +833,6 @@ void *handle_client(void *arg) {
 
 // New handle_visit method to handle client interaction during registration and login
 void handle_visit(int client_socket) {
-    send_online_players(client_socket);
     char buffer[BUFFER_SIZE];
     bzero(buffer, BUFFER_SIZE);
 
@@ -786,12 +841,11 @@ void handle_visit(int client_socket) {
     while (1) {
         send_message(client_socket, "REGISTER <pseudo> <password>\nLOGIN <pseudo> <password>\n");
 
-        char current_user[50] = {0}; // Stores the current logged-in user
-
         bzero(buffer, BUFFER_SIZE);
         int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
         if (bytes_received <= 0) {
-            handle_logout(client_socket, current_user);
+            close(client_socket);
+            pthread_exit(NULL);
             return;  // Exit if the client disconnects
         }
 
@@ -875,7 +929,7 @@ void handle_registration(int client_socket, char *pseudo, char *password) {
             printf("Player registered: %s\n", pseudo);
 
             pthread_mutex_unlock(&player_mutex);
-            handle_logged_in_menu(client_socket, pseudo);
+            handle_logged_in_menu(&players[i]);
             return;
         }
     }
@@ -894,9 +948,12 @@ void handle_login(int client_socket, char *pseudo, char *password) {
     pthread_mutex_lock(&player_mutex);  // Locking the mutex to ensure thread-safety
 
     // Step 2: Check if the user is already online
-    int player_index = find_player_by_pseudo(pseudo);
-    if (player_index >= 0) {
-        if (players[player_index].is_online) {
+    Player *player = find_player_by_pseudo(pseudo);
+    if (player == NULL) {
+        send_message(client_socket, "Player not found!\n");
+        pthread_mutex_unlock(&player_mutex);
+    } else {
+        if (player->is_online) {
             // If the player is already online
             send_message(client_socket, "You are already logged in!\n");
             pthread_mutex_unlock(&player_mutex);  // Unlock mutex before returning
@@ -907,26 +964,22 @@ void handle_login(int client_socket, char *pseudo, char *password) {
         char hashed_password[HASH_SIZE];
         hash_password(password, hashed_password);  // Hash the input password
 
-        if (!compare_hashes(players[player_index].password, hashed_password)) {
+        if (!compare_hashes(player->password, hashed_password)) {
             send_message(client_socket, "Incorrect password!\n");
             pthread_mutex_unlock(&player_mutex);  // Unlock mutex before returning
             return;
         }
 
         // Step 4: Mark the user as online and set their socket
-        players[player_index].is_online = true;
-        players[player_index].socket = client_socket;
+        player->is_online = true;
+        player->socket = client_socket;
 
         send_message(client_socket, "Login successful!\n");
         printf("Player logged in: %s\n", pseudo);
 
         pthread_mutex_unlock(&player_mutex);  // Unlock mutex after handling the login
-        handle_logged_in_menu(client_socket, pseudo);
+        handle_logged_in_menu(player);
 
-    } else {
-        // If the user doesn't exist
-        send_message(client_socket, "Player not found!\n");
-        pthread_mutex_unlock(&player_mutex);
     }
 
 }
@@ -989,30 +1042,50 @@ void load_players_from_file() {
 }
 
 // Send list of online players
-void send_online_players(int client_socket) {
+void send_online_players(Player *player) {
     pthread_mutex_lock(&player_mutex);
 
     char response[BUFFER_SIZE];
     strcpy(response, "Online players:\n");
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (players[i].is_online) {
+            if (strcmp(players[i].pseudo, player->pseudo) == 0) {
+                continue;
+            }
             strcat(response, players[i].pseudo);
             strcat(response, "\n");
         }
     }
-    send_message(client_socket, response);
+    send_message(player->socket, response);
+
+    pthread_mutex_unlock(&player_mutex);
+}
+
+void send_active_games(Player *player) {
+    pthread_mutex_lock(&player_mutex);
+
+    char response[BUFFER_SIZE];
+    strcpy(response, "Active games:\n");
+    for (int i = 0; i < active_game_count; i++) {
+        Game *game = active_games[i];
+        strcat(response, game->player1->pseudo);
+        strcat(response, " VS ");
+        strcat(response, game->player2->pseudo);
+        strcat(response, "\n");
+    }
+    send_message(player->socket, response);
 
     pthread_mutex_unlock(&player_mutex);
 }
 
 // Find a player by pseudo
-int find_player_by_pseudo(const char *pseudo) {
+Player *find_player_by_pseudo(const char *pseudo) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (strcmp(players[i].pseudo, pseudo) == 0) {
-            return i;
+            return &players[i];
         }
     }
-    return -1;
+    return NULL;
 }
 
 // Main server function
@@ -1086,7 +1159,4 @@ int main(int argc, char **argv) {
             pthread_detach(thread_id);
         }
     }
-
-    close(sockfd);
-    return 0;
 }
