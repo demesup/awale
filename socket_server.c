@@ -33,7 +33,7 @@ typedef struct {
     int socket;
     bool in_game;
     bool is_online;
-    char bio[MAX_BIO_LINES][MAX_BIO_LENGTH];
+    char bio[MAX_BIO_LINES * MAX_BIO_LENGTH];
 } Player;
 
 typedef struct {
@@ -64,16 +64,6 @@ void handle_challenge(int client_socket, const char *current_user);
 
 void handle_challenged_response(char response, int client_socket, int challenged_socket, const char *current_user,
                                 int challenged_index);
-
-void handle_add_bio(int client_socket, const char *current_user);
-
-void handle_see_bio(int client_socket, const char *current_user);
-
-void handle_see_bio_by_username(int client_socket);
-
-void save_bio(const char *username, const char *bio);
-
-int get_bio(const char *username, char *bio);
 
 void clean_up_game(Game *game);
 
@@ -121,65 +111,134 @@ void end_game(Player *player1, Player *player2, int result, Game *game);
 
 void player_turn(Player *current_player, Player *opponent, Game *game);
 
-void write_bio(int client_socket, Player *player);
+void handle_add_bio(int client_socket, const char *current_user);
 
-void display_bio(int client_socket, const char *pseudo);
+void handle_see_bio(int client_socket, const char *current_user);
 
-void display_bio(int client_socket, const char *pseudo) {
-    int player_index = find_player_by_pseudo(pseudo);
-    if (player_index == -1) {
-        send_message(client_socket, "Le joueur avec ce pseudo n'existe pas.\n");
+void handle_see_bio_by_username(int client_socket);
+
+void save_or_update_bio(const char *username, const char *bio);
+
+void handle_see_bio_by_username(int client_socket) {
+    char buffer[BUFFER_SIZE];
+    send_message(client_socket, "Enter the username of the player whose bio you want to see:\n");
+
+    bzero(buffer, BUFFER_SIZE);
+    int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+    if (bytes_received <= 0) return;
+
+    buffer[strcspn(buffer, "\n")] = '\0';  // Remove trailing newline
+
+    char bio_output[MAX_BIO_LINES * MAX_BIO_LENGTH] = "Bio:\n";
+    int found = 0;
+
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (strcmp(players[i].pseudo, buffer) == 0) {
+            found = 1;
+            if (strlen(players[i].bio) > 0) {
+                strncat(bio_output, players[i].bio, sizeof(bio_output) - strlen(bio_output) - 1);
+            } else {
+                strncat(bio_output, "This player hasn't added a bio yet.\n",
+                        sizeof(bio_output) - strlen(bio_output) - 1);
+            }
+            break;
+        }
+    }
+
+    if (!found) {
+        snprintf(bio_output, sizeof(bio_output), "User '%s' not found.\n", buffer);
+    }
+
+    send_message(client_socket, bio_output);
+}
+
+
+void handle_see_bio(int client_socket, const char *current_user) {
+    char buffer[BUFFER_SIZE] = "Your bio:\n";
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (strcmp(players[i].pseudo, current_user) == 0) {
+            if (strlen(players[i].bio) > 0) {
+                strncat(buffer, players[i].bio, sizeof(buffer) - strlen(buffer) - 1);
+            } else {
+                strncat(buffer, "You haven't added a bio yet.\n", sizeof(buffer) - strlen(buffer) - 1);
+            }
+            break;
+        }
+    }
+    send_message(client_socket, buffer);
+}
+
+
+void save_or_update_bio(const char *username, const char *bio) {
+    // Step 1: Find the player by username
+    int player_found = -1;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (strcmp(players[i].pseudo, username) == 0) {
+            player_found = i;
+            break;
+        }
+    }
+
+    if (player_found == -1) {
+        printf("Player with username '%s' not found.\n", username);
         return;
     }
 
-    Player *player = &players[player_index];
+    // Step 2: Update the bio for the found player
+    strncpy(players[player_found].bio, bio, MAX_BIO_LENGTH - 1);
+    players[player_found].bio[MAX_BIO_LENGTH - 1] = '\0'; // Ensure null termination
 
-    char bio_header[BUFFER_SIZE];
-    snprintf(bio_header, sizeof(bio_header), "Voici la bio de %s :\n", pseudo);
-    send_message(client_socket, bio_header);
+    // Step 3: Rewrite the entire file with updated bio information
+    FILE *file = fopen(PLAYER_FILE, "w");
+    if (!file) {
+        perror("Error opening file for writing");
+        return;
+    }
 
-    // Afficher la bio ligne par ligne
-    for (int i = 0; i < MAX_BIO_LINES; i++) {
-        if (strlen(player->bio[i]) > 0) {
-            send_message(client_socket, player->bio[i]);
+    // Write all players to the file
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (players[i].pseudo[0] != '\0') {  // Check if player slot is not empty
+            fprintf(file, "%s %s\n", players[i].pseudo, players[i].password);
+
+            // Write the bio, ensuring the "bio:" label
+            fprintf(file, "bio: %s\n", players[i].bio);
+
+            // Write the "-----" separator after each player's data
+            fprintf(file, "-----\n");
         }
     }
 
-    send_message(client_socket, "\n");
+    fclose(file);
+    printf("Bio for player '%s' updated successfully.\n", username);
 }
 
-void write_bio(int client_socket, Player *player) {
+
+void handle_add_bio(int client_socket, const char *current_user) {
     char buffer[BUFFER_SIZE];
-    char bio_message[] = "Veuillez entrer votre bio (maximum 10 lignes, tapez 'FIN' pour terminer):\n";
-    send_message(client_socket, bio_message);
+    send_message(client_socket, "Enter your bio (up to 10 lines, 100 chars each):\n");
 
-    // Réinitialiser la bio
-    memset(player->bio, 0, sizeof(player->bio));
-
-    // Demander à l'utilisateur de remplir sa bio ligne par ligne
+    char new_bio[MAX_BIO_LINES * MAX_BIO_LENGTH] = "";
     for (int i = 0; i < MAX_BIO_LINES; i++) {
-        send_message(client_socket, "Entrez la ligne de bio : ");
+        bzero(buffer, BUFFER_SIZE);
+        int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+        if (bytes_received <= 0 || strncmp(buffer, "END", 3) == 0) break;  // User ends input with "END"
 
-        bzero(buffer, sizeof(buffer));
-        int bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
-        if (bytes_received <= 0) {
-            send_message(client_socket, "Déconnexion détectée.\n");
-            return;
-        }
-
-        buffer[bytes_received] = '\0';
-
-        // Si l'utilisateur entre 'FIN', on arrête la saisie
-        if (strncmp(buffer, "FIN", 3) == 0) {
-            break;
-        }
-
-        // Stocker la ligne dans la bio du joueur
-        snprintf(player->bio[i], MAX_BIO_LENGTH, "%s", buffer);
+        strncat(new_bio, buffer, sizeof(new_bio) - strlen(new_bio) - 1);
+        if (i < MAX_BIO_LINES - 1) strncat(new_bio, "\n", sizeof(new_bio) - strlen(new_bio) - 1);
     }
 
-    // Confirmer que la bio a été enregistrée
-    send_message(client_socket, "Votre bio a été enregistrée avec succès.\n");
+    // Save the bio to the player's file
+    save_or_update_bio(current_user, new_bio);
+
+    // Update the in-memory player list
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (strcmp(players[i].pseudo, current_user) == 0) {
+            strncpy(players[i].bio, new_bio, sizeof(players[i].bio) - 1);
+            break;
+        }
+    }
+
+    send_message(client_socket, "Your bio has been updated.\n");
 }
 
 
@@ -618,92 +677,6 @@ void handle_logout(int client_socket, const char *current_user) {
     pthread_exit(NULL);
 }
 
-void save_bio(const char *username, const char *bio) {
-    char filename[BUFFER_SIZE];
-    sprintf(filename, "%s_bio.txt", username);
-
-    FILE *file = fopen(filename, "w");
-    if (file) {
-        fprintf(file, "%s", bio);
-        fclose(file);
-    } else {
-        printf("Failed to save bio for user %s.\n", username);
-    }
-}
-
-int get_bio(const char *username, char *bio) {
-    char filename[BUFFER_SIZE];
-    sprintf(filename, "%s_bio.txt", username);
-
-    FILE *file = fopen(filename, "r");
-    if (file) {
-        fgets(bio, BUFFER_SIZE, file);
-        fclose(file);
-        return 1;  // Bio found
-    } else {
-        return 0;  // Bio not found
-    }
-}
-
-
-void handle_add_bio(int client_socket, const char *current_user) {
-    char buffer[BUFFER_SIZE];
-    send_message(client_socket, "Enter your bio (10 lines max, ASCII characters only):\n");
-
-    // Lire la bio depuis le client
-    bzero(buffer, BUFFER_SIZE);
-    int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
-    if (bytes_received <= 0) {
-        send_message(client_socket, "Failed to receive bio.\n");
-        return;
-    }
-
-    // Supposons que vous ayez une fonction qui enregistre la bio du joueur
-    save_bio(current_user, buffer);  // Enregistrer la bio dans un fichier ou une base de données
-
-    send_message(client_socket, "Your bio has been updated!\n");
-}
-
-void handle_see_bio_by_username(int client_socket) {
-    char buffer[BUFFER_SIZE];
-
-    send_message(client_socket, "Enter the username to see the bio:\n");
-    bzero(buffer, BUFFER_SIZE);
-    int bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
-    if (bytes_received <= 0) {
-        send_message(client_socket, "Failed to receive username.\n");
-        return;
-    }
-
-    char username[BUFFER_SIZE];
-    strcpy(username, buffer);  // Copier le nom d'utilisateur
-
-    char bio[BUFFER_SIZE];
-
-    // Supposons que vous ayez une fonction pour récupérer la bio d'un autre joueur
-    if (get_bio(username, bio)) {
-        send_message(client_socket, "Bio of ");
-        send_message(client_socket, username);
-        send_message(client_socket, ":\n");
-        send_message(client_socket, bio);
-    } else {
-        send_message(client_socket, "No bio found for this player.\n");
-    }
-}
-
-void handle_see_bio(int client_socket, const char *current_user) {
-    char bio[BUFFER_SIZE];
-
-    // Supposons que vous ayez une fonction pour récupérer la bio d'un joueur
-    if (get_bio(current_user, bio)) {
-        send_message(client_socket, "Your bio:\n");
-        send_message(client_socket, bio);
-    } else {
-        send_message(client_socket, "You don't have a bio yet.\n");
-    }
-}
-
-
 void handle_logged_in_menu(int client_socket, const char *current_user) {
     char buffer[BUFFER_SIZE];
 
@@ -773,13 +746,14 @@ void *handle_client(void *arg) {
     handle_visit(client_socket);
 
 
-    close(client_socket);  // Close the socket after registration or login is handled
+    close(client_socket);
     return NULL;
 }
 
 
 // New handle_visit method to handle client interaction during registration and login
 void handle_visit(int client_socket) {
+    send_online_players(client_socket);
     char buffer[BUFFER_SIZE];
     bzero(buffer, BUFFER_SIZE);
 
@@ -838,12 +812,14 @@ void handle_registration(int client_socket, char *pseudo, char *password) {
     // Validate input: pseudo and password cannot be empty
     if (strlen(pseudo) == 0 || strlen(password) == 0) {
         send_message(client_socket, "Pseudo and password cannot be empty!\n");
+        pthread_mutex_lock(&player_mutex);
         return;
     }
 
     // Check if pseudo already exists in the file
     if (is_pseudo_in_file(pseudo)) {
         send_message(client_socket, "Pseudo already taken!\n");
+        pthread_mutex_lock(&player_mutex);
         return;
     }
 
@@ -933,6 +909,7 @@ void save_player_to_file(Player *player) {
     FILE *file = fopen(PLAYER_FILE, "a");
     if (file) {
         fprintf(file, "%s %s\n", player->pseudo, player->password);
+        fprintf(file, "-----\n");
         fclose(file);
     } else {
         perror("Failed to open player file");
@@ -945,6 +922,8 @@ void load_players_from_file() {
     if (file) {
         // File exists, proceed with reading players
         char pseudo[50], password[50];
+        char line[256];  // Declare the line variable here
+
         while (fscanf(file, "%s %s", pseudo, password) == 2) {
             for (int i = 0; i < MAX_PLAYERS; i++) {
                 if (players[i].pseudo[0] == '\0') {
@@ -953,6 +932,17 @@ void load_players_from_file() {
                     players[i].is_online = false;
                     players[i].socket = -1;
                     players[i].in_game = false;
+                    players[i].bio[0] = '\0';  // Initialize the bio to be empty
+
+                    // Read the bio data (assuming it starts after "bio:")
+                    while (fgets(line, sizeof(line), file)) {
+                        // If we hit the "-----" separator, we stop reading bio data
+                        if (strncmp(line, "-----", 5) == 0) {
+                            break;
+                        }
+                        // Append the line to the player's bio
+                        strcat(players[i].bio, line);
+                    }
                     break;
                 }
             }
