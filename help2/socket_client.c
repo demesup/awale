@@ -1,7 +1,3 @@
-/* Client pour les sockets
- *    socket_client ip_server port
- */
-
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -10,134 +6,90 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <ctype.h>
+#include <pthread.h>
 
-#define MAX_CREDENTIALS_LENGTH 30
+#define BUFFER_SIZE 1024
 
-void format_message(const char *action, const char *login, const char *password, char *formatted_message, int buffer_size);
+// Function to listen to messages from the server
+void *listen_to_server(void *arg) {
+    int server_socket = *(int *)arg;
+    char buffer[BUFFER_SIZE];
+    ssize_t bytes_received;
 
-void get_input(const char *prompt, char *buffer, int max_length);
-
-int validate_credentials_input(const char *input);
-
-void get_input(const char *prompt, char *buffer, int max_length);
-
-void login_loop(int sockfd);
-
-int get_credentials(char *login, char *password) {
-    // Get and validate login
-    get_input("Enter pseudo (max 30 chars): ", login, MAX_CREDENTIALS_LENGTH);
-    if (!validate_credentials_input(login)) {
-        printf("Invalid pseudo. Please try again.\n");
-        return 0;
+    while ((bytes_received = recv(server_socket, buffer, BUFFER_SIZE - 1, 0)) > 0) {
+        buffer[bytes_received] = '\0'; // Null-terminate the received message
+        printf("%s", buffer); // Display the message
     }
 
-    // Get and validate password
-    get_input("Enter password (max 30 chars): ", password, MAX_CREDENTIALS_LENGTH);
-    if (!validate_credentials_input(password)) {
-        printf("Invalid password. Please try again.\n");
-        return 0;
+    if (bytes_received == 0) {
+        printf("Disconnected from the server.\n");
+    } else if (bytes_received < 0) {
+        perror("Error receiving data from server");
     }
 
-    return 1; // Return true (1) if both are valid
-}
-
-int validate_credentials_input(const char *input) {
-    int length = strlen(input);
-    return length > 0 && length <= MAX_CREDENTIALS_LENGTH;
-}
-
-void format_message(const char* action, const char* pseudo, const char* password, char* formatted_message, int buffer_size) {
-    snprintf(formatted_message, buffer_size, "%s: %s %s\n", action, pseudo, password);
-}
-
-void get_input(const char* prompt, char* buffer, int max_length) {
-    printf("%s", prompt);
-    fflush(stdout);
-    fgets(buffer, max_length + 1, stdin);
-    buffer[strcspn(buffer, "\n")] = '\0'; // Remove trailing newline
-}
-
-void login_loop(int sockfd) {
-    char login[MAX_CREDENTIALS_LENGTH + 1];
-    char password[MAX_CREDENTIALS_LENGTH + 1];
-    char formatted_message[MAX_CREDENTIALS_LENGTH * 2 + 11]; // "REGISTER: " + login + password + spaces
-    char action_choice;
-    char action[1];
-
-    while (1) {
-        if (!get_credentials(login, password)) {
-            continue;
-        }
-
-        get_input("Do you want to register (r/1) or login (l/2)? ", action, 1);
-        action_choice = tolower(action[0]); // Normalize to lower case
-        const char* action = (action_choice == 'r' || action_choice == '1') ? "REGISTER" : "LOGIN";
-        format_message(action, login, password, formatted_message, sizeof(formatted_message));
-        if (write(sockfd, formatted_message, strlen(formatted_message)) < 0) {
-            perror("Error writing to socket");
-        } else {
-            printf("Message sent: %s\n", formatted_message);
-            break;
-        }
-    }
+    close(server_socket);
+    exit(0);
+    return NULL;
 }
 
 int main(int argc, char **argv) {
-    int sockfd, newsockfd, clilen, chilpid, ok, nleft, nbwriten;
-    char c;
-    struct sockaddr_in cli_addr, serv_addr;
-
     if (argc != 3) {
-        printf("usage  socket_client server port\n");
-        exit(0);
+        printf("Usage: %s <server_ip> <server_port>\n", argv[0]);
+        exit(EXIT_FAILURE);
     }
 
+    int sockfd;
+    struct sockaddr_in serv_addr;
 
-    /*
-     *  partie client
-     */
-    printf("client starting\n");
+    // Create a socket
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        perror("Socket creation failed");
+        exit(EXIT_FAILURE);
+    }
 
-    /* initialise la structure de donnee */
-    bzero((char *) &serv_addr, sizeof(serv_addr));
+    // Initialize server address
+    bzero((char *)&serv_addr, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = inet_addr(argv[1]);
     serv_addr.sin_port = htons(atoi(argv[2]));
 
-    /* ouvre le socket */
-    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        printf("socket error\n");
-        exit(0);
+    // Convert and set the server IP address
+    if (inet_pton(AF_INET, argv[1], &serv_addr.sin_addr) <= 0) {
+        perror("Invalid server IP address");
+        close(sockfd);
+        exit(EXIT_FAILURE);
     }
 
-    /* effectue la connection */
-    if (connect(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
-        printf("socket error\n");
-        exit(0);
+    // Connect to the server
+    if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        perror("Connection to server failed");
+        close(sockfd);
+        exit(EXIT_FAILURE);
     }
 
+    // Create a thread to listen to server messages
+    pthread_t listener_thread;
+    if (pthread_create(&listener_thread, NULL, listen_to_server, &sockfd) != 0) {
+        perror("Thread creation failed");
+        close(sockfd);
+        exit(EXIT_FAILURE);
+    }
 
-    login_loop(sockfd);
-
-    /* repete dans le socket tout ce qu'il entend */
+    // Send commands to the server
+    char buffer[BUFFER_SIZE];
     while (1) {
-       /* if /all is entered then send request PLAYERS
-        * /games -> GAMES
-        * /ug -> GAMES: <pseudo>
-        * /ch -> CHALLENGE: <challenged_pseudo>
-        * /a -> ACCEPT
-        * /d -> DECLINE
-        * /obs -> OBSERVE: <game_id>
-        * /bio -> SEE_BIO: <current_pseudo> -this pseudo is taken from the session(when logging in/registering the
-        * /exit -> LOGOUT
-        * */
+        if (fgets(buffer, BUFFER_SIZE, stdin) == NULL) {
+            break;
+        }
+        if (send(sockfd, buffer, strlen(buffer), 0) < 0) {
+            perror("Failed to send command");
+            break;
+        }
     }
 
-    /*  attention il s'agit d'une boucle infinie
-     *  le socket n'est jamais ferme !
-     */
-
-    return 1;
-
+    // Clean up
+    pthread_cancel(listener_thread);
+    pthread_join(listener_thread, NULL);
+    close(sockfd);
+    return 0;
 }
