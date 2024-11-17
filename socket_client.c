@@ -16,11 +16,46 @@ int logged_in = 0;
 
 /** PROTOTYPES */
 int contains_space(const char *str);
+
 void read_line(char *prompt, char *buffer, size_t size);
+
 int send_message(int sockfd, const char *message);
+
 int login_or_register(int server_socket);
+
 void *listen_to_server(void *arg);
+
 void *handle_user_commands(int server_socket);
+
+void handle_help();
+
+void handle_exit(int server_socket);
+
+void handle_online(int server_socket);
+
+void handle_players(int server_socket);
+
+void handle_games(int server_socket);
+
+void handle_obs(int server_socket);
+
+void handle_bio(int server_socket);
+
+void handle_view_bio(int server_socket);
+
+void handle_update_bio(int server_socket);
+
+void handle_global_message(int server_socket);
+
+void handle_direct_message(int server_socket);
+
+void handle_make_move(int server_socket);
+
+void handle_end_game(int server_socket);
+
+void handle_leave_game(int server_socket);
+
+
 
 /** CODE */
 
@@ -54,60 +89,85 @@ int send_message(int sockfd, const char *message) {
 
 // Function to handle login or registration
 int login_or_register(int server_socket) {
+    char buffer[BUFFER_SIZE];
     char pseudo[MAX_PSEUDO_LEN + 1];
     char password[MAX_PASSWORD_LEN + 1];
-    char buffer[BUFFER_SIZE];
-    char choice[1];
-
+    char command[BUFFER_SIZE];
+    char *token;
+    const char *prompt =
+            "Enter your command:\n"
+            "/l <pseudo> <password> for login\n"
+            "/r <pseudo> <password> for registration\n";
     while (!logged_in) {
-        read_line("Choose an option:\n1. Login\n2. Register", choice, BUFFER_SIZE);
-        if (strcmp("1", choice) != 0 && strcmp("2", choice) != 0) {
-            printf("Invalid choice. Please enter 1 or 2.\n");
+
+        read_line((char *) prompt, buffer, BUFFER_SIZE);
+
+        // Tokenize the input
+        token = strtok(buffer, " ");
+        if (token == NULL) {
+            printf("Invalid command format. Please try again.\n");
             continue;
         }
 
-        read_line("Enter pseudo (max 10 characters, no spaces): ", pseudo, MAX_PSEUDO_LEN + 1);
-        if (strlen(pseudo) > MAX_PSEUDO_LEN || contains_space(pseudo)) {
-            printf("Invalid pseudo. Ensure it has no spaces and is at most %d characters.\n", MAX_PSEUDO_LEN);
-            continue;
-        }
+        // Check if it's a login or register command
+        if (strcmp(token, "/l") == 0 || strcmp(token, "/r") == 0) {
+            // Extract pseudo
+            token = strtok(NULL, " ");
+            if (token == NULL || strlen(token) > MAX_PSEUDO_LEN || contains_space(token)) {
+                printf("Invalid pseudo. Ensure it has no spaces and is at most %d characters.\n", MAX_PSEUDO_LEN);
+                continue;
+            }
+            strncpy(pseudo, token, MAX_PSEUDO_LEN);
+            pseudo[MAX_PSEUDO_LEN] = '\0';
 
-        read_line("Enter password (max 10 characters, no spaces): ", password, MAX_PASSWORD_LEN);
-        if (strlen(password) > MAX_PASSWORD_LEN || contains_space(password)) {
-            printf("Invalid password. Ensure it has no spaces and is at most %d characters.\n", MAX_PASSWORD_LEN);
-            continue;
-        }
+            // Extract password
+            token = strtok(NULL, " ");
+            if (token == NULL || strlen(token) > MAX_PASSWORD_LEN || contains_space(token)) {
+                printf("Invalid password. Ensure it has no spaces and is at most %d characters.\n", MAX_PASSWORD_LEN);
+                continue;
+            }
+            strncpy(password, token, MAX_PASSWORD_LEN);
+            password[MAX_PASSWORD_LEN] = '\0';
 
-        // Send login or registration request to the server
-        if (strcmp("1", choice) == 0) {
-            snprintf(buffer, BUFFER_SIZE, "LOGIN %s %s\n", pseudo, password);
+            // Check for additional tokens (invalid command)
+            if (strtok(NULL, " ") != NULL) {
+                printf("Too many arguments. Command should only contain pseudo and password.\n");
+                continue;
+            }
+
+            // Send login or registration request
+            if (strcmp(buffer, "/l") == 0) {
+                snprintf(command, BUFFER_SIZE, "LOGIN %s %s\n", pseudo, password);
+            } else {
+                snprintf(command, BUFFER_SIZE, "REGISTER %s %s\n", pseudo, password);
+            }
+
+            if (send_message(server_socket, command) < 0) {
+                perror("Failed to send login/register request");
+                continue;
+            }
+
+            // Wait until login is successful before proceeding
+            usleep(200);  // Sleep for a short time before checking again
         } else {
-            snprintf(buffer, BUFFER_SIZE, "REGISTER %s %s\n", pseudo, password);
+            printf("Unknown command. Please use /l for login or /r for registration.\n");
         }
-
-        if (send_message(server_socket, buffer) < 0) {
-            perror("Failed to send login/register request");
-        }
-
-        // Wait until login is successful before proceeding
-        usleep(100);  // Sleep for a short time before checking again
     }
 
     // Once logged in, proceed to handle user commands
     printf("Login successful! Proceeding to command handling...\n");
+
 }
 
 // Function to listen to messages from the server
 void *listen_to_server(void *arg) {
-    int server_socket = *(int *)arg;
+    int server_socket = *(int *) arg;
     char buffer[BUFFER_SIZE];
     ssize_t bytes_received;
 
     while ((bytes_received = recv(server_socket, buffer, BUFFER_SIZE - 1, 0)) > 0) {
         buffer[bytes_received] = '\0'; // Null-terminate the received message
         buffer[strlen(buffer) - 1] = '\0'; // Removing any trailing newlines
-
-        printf("Received from server: |%s|\n", buffer);
 
         // Check for successful login message
         if (strcmp(buffer, "Login successful!") == 0) {
@@ -130,67 +190,46 @@ void *listen_to_server(void *arg) {
 // Function to handle user commands
 void *handle_user_commands(int server_socket) {
     char buffer[BUFFER_SIZE];
-    char formatted_command[BUFFER_SIZE];
 
-    printf("You can now issue commands.\n");
-
-    if (!logged_in) {
-        printf("You must be logged in to issue commands.\n");
-        return NULL; // Exit if not logged in
-    }
+    printf("You can now issue commands. Type /help to see available commands.\n");
 
     while (1) {
-        if (fgets(buffer, BUFFER_SIZE, stdin) == NULL) {
-            break;
-        }
+        read_line("", buffer, BUFFER_SIZE);
 
-        // Remove trailing newline from input
-        buffer[strcspn(buffer, "\n")] = '\0';
-
-        // Format the command based on input
-        if (strcmp(buffer, "/exit") == 0) {
-            snprintf(formatted_command, BUFFER_SIZE, "LOGOUT\n");
+        if (strcmp(buffer, "/help") == 0) {
+            handle_help();
+        } else if (strcmp(buffer, "/exit") == 0) {
+            handle_exit(server_socket);
         } else if (strcmp(buffer, "/online") == 0) {
-            snprintf(formatted_command, BUFFER_SIZE, "ONLINE\n");
+            handle_online(server_socket);
         } else if (strcmp(buffer, "/players") == 0) {
-            snprintf(formatted_command, BUFFER_SIZE, "PLAYERS\n");
+            handle_players(server_socket);
         } else if (strcmp(buffer, "/games") == 0) {
-            snprintf(formatted_command, BUFFER_SIZE, "GAMES\n");
-        } else if (strncmp(buffer, "/obs ", 5) == 0) {
-            snprintf(formatted_command, BUFFER_SIZE, "OBSERVE %s\n", buffer + 5);
+            handle_games(server_socket);
+        } else if (strcmp(buffer, "/obs") == 0) {
+            handle_obs(server_socket);
         } else if (strcmp(buffer, "/bio") == 0) {
-            snprintf(formatted_command, BUFFER_SIZE, "BIO\n");
+            handle_bio(server_socket);
         } else if (strncmp(buffer, "/bio ", 5) == 0) {
-            snprintf(formatted_command, BUFFER_SIZE, "BIO %s\n", buffer + 5);
+            handle_view_bio(server_socket);
         } else if (strncmp(buffer, "/update ", 8) == 0) {
-            snprintf(formatted_command, BUFFER_SIZE, "UPDATE_BIO %s\n", buffer + 8);
+            handle_update_bio(server_socket);
         } else if (strncmp(buffer, "/gl ", 4) == 0) {
-            snprintf(formatted_command, BUFFER_SIZE, "GLOBAL %s\n", buffer + 4);
+            handle_global_message(server_socket);
         } else if (strncmp(buffer, "/msg ", 5) == 0) {
-            snprintf(formatted_command, BUFFER_SIZE, "MESSAGE %s\n", buffer + 5);
-        } else if (strncmp(buffer, "/gmsg ", 6) == 0) {
-            snprintf(formatted_command, BUFFER_SIZE, "MESSAGE %s\n", buffer + 6);
+            handle_direct_message(server_socket);
         } else if (strncmp(buffer, "/m ", 3) == 0) {
-            snprintf(formatted_command, BUFFER_SIZE, "MOVE %s\n", buffer + 3);
+            handle_make_move(server_socket);
         } else if (strcmp(buffer, "/end") == 0) {
-            snprintf(formatted_command, BUFFER_SIZE, "END\n");
+            handle_end_game(server_socket);
         } else if (strcmp(buffer, "/leave") == 0) {
-            snprintf(formatted_command, BUFFER_SIZE, "LEAVE\n");
+            handle_leave_game(server_socket);
         } else {
             printf("Unknown command: %s\n", buffer);
-            continue;
-        }
-
-        // Send the formatted command to the server
-        if (send(server_socket, formatted_command, strlen(formatted_command), 0) < 0) {
-            perror("Failed to send command");
-            break;
         }
     }
-
-    exit(0);
-    return NULL;
 }
+
 
 int main(int argc, char **argv) {
     if (argc != 3) {
@@ -233,19 +272,119 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    // Handle login or registration
     login_or_register(sockfd);
 
 
     handle_user_commands(sockfd);
-
-    pthread_join(listener_thread, NULL);
-    // Create a thread to listen to server messages
-
-
-    // Create a thread to handle user commands
-
-
-    // Wait for threads to finish
-
 }
+
+void handle_help() {
+    printf(
+            "Available commands:\n"
+            "/help - Show this help message\n"
+            "/exit - Logout and exit the application\n"
+            "/online - Show online users\n"
+            "/players - Show available players\n"
+            "/games - Show available games\n"
+            "/obs - Observe a game\n"
+            "/bio - View your bio\n"
+            "/bio <player> - View another player's bio\n"
+            "/update - Update your bio\n"
+            "/gl - Send a global message\n"
+            "/msg - Send a direct message to a player\n"
+            "/m - Make a move in the current game\n"
+            "/end - End the current game\n"
+            "/leave - Leave the current game\n"
+    );
+}
+
+
+void handle_exit(int server_socket) {
+    const char *command = "LOGOUT\n";
+    if (send(server_socket, command, strlen(command), 0) < 0) {
+        perror("Failed to send LOGOUT command");
+    } else {
+        printf("Logged out successfully. Exiting...\n");
+        exit(0);
+    }
+}
+
+
+void handle_online(int server_socket) {
+    printf("Sending ONLINE request\n");
+    const char *command = "ONLINE\n";
+    send(server_socket, command, strlen(command), 0);
+}
+
+void handle_players(int server_socket) {
+    printf("Sending PLAYERS request\n");
+    const char *command = "PLAYERS\n";
+    send(server_socket, command, strlen(command), 0);
+}
+
+void handle_games(int server_socket) {
+    printf("Sending GAMES request\n");
+    const char *command = "GAMES\n";
+    send(server_socket, command, strlen(command), 0);
+}
+
+void handle_obs(int server_socket) {
+    printf("Sending OBSERVE request\n");
+    // Add prompt for specific game ID in the future
+    const char *command = "OBSERVE\n";
+    send(server_socket, command, strlen(command), 0);
+}
+
+void handle_bio(int server_socket) {
+    printf("Sending BIO request (current user)\n");
+    const char *command = "BIO\n";
+    send(server_socket, command, strlen(command), 0);
+}
+
+void handle_view_bio(int server_socket) {
+    printf("Sending BIO <player> request\n");
+    // Add prompt for player name in the future
+    const char *command = "BIO player_name\n";
+    send(server_socket, command, strlen(command), 0);
+}
+
+void handle_update_bio(int server_socket) {
+    printf("Sending UPDATE request\n");
+    // Add prompt for bio content in the future
+    const char *command = "UPDATE bio_content\n";
+    send(server_socket, command, strlen(command), 0);
+}
+
+void handle_global_message(int server_socket) {
+    printf("Sending GLOBAL MESSAGE request\n");
+    // Add prompt for message content in the future
+    const char *command = "GLOBAL_MESSAGE message_content\n";
+    send(server_socket, command, strlen(command), 0);
+}
+
+void handle_direct_message(int server_socket) {
+    printf("Sending DIRECT MESSAGE request\n");
+    // Add prompt for player and message content in the future
+    const char *command = "DIRECT_MESSAGE player_name message_content\n";
+    send(server_socket, command, strlen(command), 0);
+}
+
+void handle_make_move(int server_socket) {
+    printf("Sending MAKE MOVE request\n");
+    // Add prompt for move details in the future
+    const char *command = "MAKE_MOVE move_details\n";
+    send(server_socket, command, strlen(command), 0);
+}
+
+void handle_end_game(int server_socket) {
+    printf("Sending END GAME request\n");
+    const char *command = "END_GAME\n";
+    send(server_socket, command, strlen(command), 0);
+}
+
+void handle_leave_game(int server_socket) {
+    printf("Sending LEAVE GAME request\n");
+    const char *command = "LEAVE_GAME\n";
+    send(server_socket, command, strlen(command), 0);
+}
+
