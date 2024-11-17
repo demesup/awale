@@ -45,7 +45,8 @@ typedef struct {
     Player *player1;
     Player *player2;
     int current_turn;
-    Player observer[MAX_PLAYERS];
+    Player *observers[MAX_PLAYERS];
+    int observer_count;
 } Game;
 
 Player players[MAX_PLAYERS];
@@ -77,6 +78,9 @@ void player_turn(Player *current_player, Player *opponent, Game *game);
 bool add_game(Game *new_game);
 
 void remove_game(Game *game);
+
+void add_observer(Game *game, Player *observer);
+
 
 /** OPTION */
 void send_online_players(Player *player);
@@ -153,6 +157,16 @@ void send_boards(Game *game);
 void send_message(int socket, const char *message);
 
 /** ACTUAL CODE */
+
+void add_observer(Game *game, Player *observer) {
+    if (game->observer_count < MAX_PLAYERS) {
+        game->observers[game->observer_count++] = observer;
+        send_message(observer->socket, "You are now observing the game.\n");
+    } else {
+        send_message(observer->socket, "Game has reached the maximum number of observers.\n");
+    }
+}
+
 void remove_game(Game *game) {
     for (int i = 0; i < active_game_count; i++) {
         if (active_games[i] == game) {
@@ -169,6 +183,32 @@ void remove_game(Game *game) {
 void handle_observe(Player *player) {
     send_active_games(player);
 
+    send_message(player->socket, "Enter the game ID to observe: ");
+
+    char buffer[BUFFER_SIZE];
+    int bytes_read = recv(player->socket, buffer, sizeof(buffer) - 1, 0);
+
+    if (bytes_read > 0) {
+        buffer[bytes_read] = '\0'; // Null-terminate the string
+        int game_id = atoi(buffer); // Convert input to an integer
+        pthread_mutex_lock(&player_mutex);
+
+        // Validate the game ID
+        if (game_id >= 0 && game_id < active_game_count) {
+            Game *game = active_games[game_id];
+            send_message(player->socket, "Observing game:\n");
+            char game_details[BUFFER_SIZE];
+            sprintf(game_details, "%s VS %s\n", game->player1->pseudo, game->player2->pseudo);
+            send_message(player->socket, game_details);
+            add_observer(game, player);
+            // Logic for observing the game goes here
+        } else {
+            send_message(player->socket, "Invalid game ID. Please try again.\n");
+            pthread_mutex_unlock(&player_mutex);
+        }
+    } else {
+        handle_logout(player);
+    }
 }
 
 
@@ -604,8 +644,8 @@ void send_boards(Game *game) {
     send_board(game->player2->socket, game->player2, game->player1);
 
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (game->observer[i].socket > 0) { // Ensure valid socket
-            send_board(game->observer[i].socket, game->player1, game->player2);
+        if (game->observers[i]->socket > 0) { // Ensure valid socket
+            send_board(game->observers[i]->socket, game->player1, game->player2);
         }
     }
     // send boards to all observers
@@ -738,7 +778,6 @@ void handle_logout(Player *player) {
     player->is_online = false;
     player->in_game = false;  // Ensure they are not in-game
     player->socket = -1;     // Reset the socket
-
 
     pthread_mutex_unlock(&player_mutex);
 
@@ -1068,10 +1107,12 @@ void send_active_games(Player *player) {
     strcpy(response, "Active games:\n");
     for (int i = 0; i < active_game_count; i++) {
         Game *game = active_games[i];
-        strcat(response, game->player1->pseudo);
-        strcat(response, " VS ");
-        strcat(response, game->player2->pseudo);
-        strcat(response, "\n");
+        char game_info[100];
+        snprintf(game_info, sizeof(game_info), "%d: %s VS %s\n",
+                 i + 1,
+                 game->player1->pseudo,
+                 game->player2->pseudo);
+        strcat(response, game_info);
     }
     send_message(player->socket, response);
 
