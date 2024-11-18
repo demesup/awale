@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <pthread.h>
 
+
 #define BUFFER_SIZE 1024
 #define MAX_PSEUDO_LEN 10
 #define MAX_PASSWORD_LEN 10
@@ -18,6 +19,28 @@ int answer_received = 0;
 char *answer = "ANSWER\n";
 char *login_success = "Login successful!\n";
 char *reg_success = "Registration successful!\n";
+char *logged_out = "Logging out...\n";
+
+
+const char *LOGOUT = "LOGOUT\n";
+const char *SHOW_ONLINE = "SHOW_ONLINE\n";
+const char *SHOW_PLAYERS = "SHOW_PLAYERS\n";
+const char *SHOW_GAMES = "SHOW_GAMES\n";
+const char *OBSERVE_GAME = "OBSERVE_GAME";
+const char *VIEW_FRIEND_LIST = "VIEW_FRIEND_LIST\n";
+const char *ADD_FRIEND = "ADD_FRIEND";
+const char *FRIENDS_ONLY = "FRIENDS_ONLY\n";
+const char *PUBLIC_OBSERVE = "PUBLIC\n";
+const char *VIEW_BIO = "VIEW_BIO\n";
+const char *VIEW_PLAYER_BIO = "VIEW_PLAYER_BIO";
+const char *UPDATE_BIO = "UPDATE_BIO";
+const char *GLOBAL_MESSAGE = "GLOBAL_MESSAGE";
+const char *GAME_MESSAGE = "GAME_MESSAGE";
+const char *DIRECT_MESSAGE = "DIRECT_MESSAGE";
+const char *MAKE_MOVE = "MAKE_MOVE";
+const char *END_GAME = "END_GAME";
+const char *LEAVE_GAME = "LEAVE_GAME";
+
 
 /** PROTOTYPES */
 int contains_space(const char *str);
@@ -25,6 +48,8 @@ int contains_space(const char *str);
 void read_line(char *prompt, char *buffer, size_t size);
 
 int send_message(int sockfd, const char *message);
+
+void add_new_line(char *command);
 
 int login_or_register(int server_socket);
 
@@ -44,7 +69,7 @@ void handle_games(int server_socket);
 
 void handle_obs(int server_socket, const char *command);
 
-void handle_bio(int server_socket, const char *command);
+void handle_bio(int server_socket);
 
 void handle_view_bio(int server_socket, const char *command);
 
@@ -62,14 +87,19 @@ void handle_end_game(int server_socket, const char *command);
 
 void handle_leave_game(int server_socket, const char *command);
 
-void handle_friend_list(int server_socket) ;
+void handle_friend_list(int server_socket);
 
 void handle_add_friend(int server_socket, const char *command);
 
 void handle_private(int server_socket);
 
 void handle_public(int server_socket);
+
 /** CODE */
+
+void add_new_line(char *command) {
+    strcat(command, "\n");
+}
 
 // Function to check if a string contains spaces
 int contains_space(const char *str) {
@@ -189,6 +219,8 @@ void *listen_to_server(void *arg) {
             answer_received = 1;
         } else if (strcmp(buffer, login_success) == 0 || strcmp(reg_success, buffer) == 0) {
             logged_in = 1;  // Set login status to true
+        } else if (strcmp(buffer, logged_out) == 0) {
+            exit(0);
         } else {
             printf("%s", buffer); // Display any other server messages
         }
@@ -206,6 +238,7 @@ void *listen_to_server(void *arg) {
 
 // Function to handle user commands
 void *handle_user_commands(int server_socket) {
+
     char buffer[BUFFER_SIZE];
 
     printf("You can now issue commands. Type /help to see available commands.\n");
@@ -226,7 +259,7 @@ void *handle_user_commands(int server_socket) {
         } else if (strncmp(buffer, "/obs ", 5) == 0) {
             handle_obs(server_socket, buffer);
         } else if (strcmp(buffer, "/bio") == 0) {
-            handle_bio(server_socket, buffer);
+            handle_bio(server_socket);
         } else if (strncmp(buffer, "/pbio ", 5) == 0) {
             handle_view_bio(server_socket, buffer);
         } else if (strncmp(buffer, "/update ", 8) == 0) {
@@ -332,26 +365,16 @@ void handle_help() {
 
 
 void handle_exit(int server_socket) {
-    const char *command = "LOGOUT\n";
-    if (send(server_socket, command, strlen(command), 0) < 0) {
-        perror("Failed to send LOGOUT command");
-    } else {
-        printf("Logged out successfully. Exiting...\n");
-        exit(0);
-    }
+    send_message(server_socket, LOGOUT);
 }
 
 
 void handle_online(int server_socket) {
-    printf("Sending ONLINE request\n");
-    const char *command = "ONLINE\n";
-    send(server_socket, command, strlen(command), 0);
+    send_message(server_socket, SHOW_ONLINE);
 }
 
 void handle_players(int server_socket) {
-    printf("Sending PLAYERS request\n");
-    const char *command = "PLAYERS\n";
-    send(server_socket, command, strlen(command), 0);
+    send_message(server_socket, SHOW_PLAYERS);
 }
 
 void handle_games(int server_socket) {
@@ -365,9 +388,8 @@ void handle_obs(int server_socket, const char *command) {
     send(server_socket, command, strlen(command), 0);
 }
 
-void handle_bio(int server_socket, const char *command) {
-    printf("Sending BIO request: %s\n", command);
-    send(server_socket, command, strlen(command), 0);
+void handle_bio(int server_socket) {
+    send_message(server_socket, VIEW_BIO);
 }
 
 void handle_view_bio(int server_socket, const char *command) {
