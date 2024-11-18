@@ -437,10 +437,61 @@ void handle_view_bio(int server_socket, const char *command) {
     }
 
 }
+
 void handle_update_bio(int server_socket, const char *command) {
     send_message(server_socket, UPDATE_BIO);
     // read max 10 lines of new bio, concat then together, still separate each line with /n, do not allow empty lines
+    char bio[BUFFER_SIZE] = ""; // Buffer to hold the concatenated bio
+    char line[BUFFER_SIZE]; // Temporary buffer for each line
+    int line_count = 0;
 
+    while (line_count < MAX_BIO_LINES) {
+        read_line("Enter a new line for your bio (or press Enter to skip):", line, sizeof(line));
+
+        // Skip empty lines
+        if (strlen(line) == 0) {
+            break;
+        }
+
+        // Concatenate the line to the bio
+        if (strlen(line) < MAX_BIO_LINE_LENGTH) {
+            strcat(bio, line);
+            strcat(bio, "\n"); // Separate each line with a newline character
+            line_count++;
+        } else if ((strlen(line) + strlen(bio)) >= MAX_BIO_LINE_LENGTH * MAX_BIO_LINES) {
+            printf("\nThe line entered is too long, try again. \n\tChars left: %d\n\t Chars passed: %d\n",
+                   MAX_BIO_LINE_LENGTH * MAX_BIO_LINES - strlen((bio)), strlen((line)));
+            continue;
+        } else {
+            printf("The line entered is too long. Breaking it down...\n");
+
+
+
+            // Split the line into smaller parts
+            char *line_part = line;
+            while (strlen(line_part) > MAX_BIO_LINE_LENGTH) {
+                // Temporarily cut the line at the max length and append to bio
+                char temp[BUFFER_SIZE];
+                strncpy(temp, line_part, MAX_BIO_LINE_LENGTH);
+                temp[MAX_BIO_LINE_LENGTH] = '\0'; // Ensure the part is null-terminated
+                strcat(bio, temp);
+                strcat(bio, "\n");
+                line_count++;
+
+                line_part += MAX_BIO_LINE_LENGTH; // Move to the next part
+            }
+
+            // If there's any remaining part, add it to the bio
+            if (line_count < MAX_BIO_LINES && strlen(line_part) > 0) {
+                strcat(bio, line_part);
+                strcat(bio, "\n");
+                line_count++;
+            }
+        }
+    }
+
+    // After collecting the bio, send it to the server
+    printf("Your updated bio is:\n%s|\n", bio);
 }
 
 void handle_global_message(int server_socket, const char *command) {

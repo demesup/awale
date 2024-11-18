@@ -70,6 +70,7 @@ typedef struct {
     int game_id;
     bool in_challenge;
     char *challenged_by;
+    char *challenged;
 
     bool is_online;
 
@@ -161,7 +162,7 @@ void end_game(Player *player1, Player *player2, int result, Game *game);
 
 int add_game(Game *new_game);
 
-void remove_game(Game *game);
+void remove_game(int game_id);
 
 void clean_up_game(Game *game);
 
@@ -715,9 +716,18 @@ void handle_logout(Player *player) {
     send_message(player->socket, "Logging out...\n");
 
     pthread_mutex_lock(&player_mutex);
+    if (player->in_game) {
+        remove_game(player->game_id);
+    }
+
+    if (player->in_challenge) {
+       // handle exit
+    }
 
     player->is_online = false;
     player->in_challenge = false;
+    player->challenged_by = "";
+    player->challenged = "";
     player->in_game = false;  // Ensure they are not in-game
     player->socket = -1;     // Reset the socket
 
@@ -777,14 +787,14 @@ void initialize_game(Player *player1, Player *player2) {
 
 
 void clean_up_game(Game *game) {
+    send_message(game->player1->socket, "Game finished\n");
+    send_message(game->player2->socket, "Game finished\n");
     game->player1->in_game = false;
     game->player1->store = 0;
     game->player1->move_history = NULL;
     game->player2->in_game = false;
     game->player2->store = 0;
     game->player2->move_history = NULL;
-    remove_game(game);
-    free(game);
 }
 
 
@@ -807,10 +817,12 @@ void initialize_board(Game *game) {
     game->player2->store = 0;
 }
 
-void remove_game(Game *game) {
+void remove_game(int game_id) {
     for (int i = 0; i < active_game_count; i++) {
-        if (active_games[i] == game) {
+        if (i == game_id) {
             // Shift all games after the found game to fill the gap
+            clean_up_game(active_games[game_id]);
+            free(active_games[game_id]);
             for (int j = i; j < active_game_count - 1; j++) {
                 active_games[j] = active_games[j + 1];
             }
@@ -834,8 +846,11 @@ void decline_challenge(Player *player) {
     send_message(player->socket, "You declined the challenge.\n");
     // Set players as in a game
     player->in_challenge = false;
+    player->challenged = "";
+    player->challenged_by = "";
     challenger->in_challenge = false;
-
+    challenger->challenged = "";
+    challenger->challenged_by = "";
 }
 
 void accept_challenge(Player *player) {
@@ -932,7 +947,9 @@ void handle_challenge(Player *player, char *command) {
 
     player->in_challenge = true;
     challenged->in_challenge = true;
+
     challenged->challenged_by = player->pseudo;
+    player->challenged = challenged->pseudo;
 
     send_challenge(player, challenged);
     notify_challenge_sent(player->socket);
@@ -995,7 +1012,7 @@ void end_game(Player *player1, Player *player2, int result, Game *game) {
     send_message(player2->socket, winner);
 
     // Clean up game state
-    clean_up_game(game);
+    remove_game(player1->game_id);
 
     // Exit the game loop or close sockets if necessary
 }
