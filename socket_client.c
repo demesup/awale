@@ -7,11 +7,13 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <pthread.h>
-
+#include <ctype.h>
 
 #define BUFFER_SIZE 1024
 #define MAX_PSEUDO_LEN 10
 #define MAX_PASSWORD_LEN 10
+#define MAX_BIO_LINES 10
+#define MAX_BIO_LINE_LENGTH 100
 
 int logged_in = 0;
 int answer_received = 0;
@@ -26,6 +28,9 @@ const char *LOGOUT = "LOGOUT\n";
 const char *SHOW_ONLINE = "SHOW_ONLINE\n";
 const char *SHOW_PLAYERS = "SHOW_PLAYERS\n";
 const char *SHOW_GAMES = "SHOW_GAMES\n";
+const char *CHALLENGE = "CHALLENGE";
+const char *ACCEPT = "ACCEPT\n";
+const char *DECLINE = "DECLINE\n";
 const char *OBSERVE_GAME = "OBSERVE_GAME";
 const char *VIEW_FRIEND_LIST = "VIEW_FRIEND_LIST\n";
 const char *ADD_FRIEND = "ADD_FRIEND";
@@ -33,7 +38,8 @@ const char *FRIENDS_ONLY = "FRIENDS_ONLY\n";
 const char *PUBLIC_OBSERVE = "PUBLIC\n";
 const char *VIEW_BIO = "VIEW_BIO\n";
 const char *VIEW_PLAYER_BIO = "VIEW_PLAYER_BIO";
-const char *UPDATE_BIO = "UPDATE_BIO";
+const char *UPDATE_BIO = "UPDATE_BIO\n";
+const char *UPDATE_BIO_BODY = "UPDATE_BIO_BODY";
 const char *GLOBAL_MESSAGE = "GLOBAL_MESSAGE";
 const char *GAME_MESSAGE = "GAME_MESSAGE";
 const char *DIRECT_MESSAGE = "DIRECT_MESSAGE";
@@ -94,6 +100,13 @@ void handle_add_friend(int server_socket, const char *command);
 void handle_private(int server_socket);
 
 void handle_public(int server_socket);
+
+void handle_accept(int server_socket);
+
+void handle_decline(int server_socket);
+
+void handle_challenge(int server_socket, const char *command);
+
 
 /** CODE */
 
@@ -262,7 +275,7 @@ void *handle_user_commands(int server_socket) {
             handle_bio(server_socket);
         } else if (strncmp(buffer, "/pbio ", 5) == 0) {
             handle_view_bio(server_socket, buffer);
-        } else if (strncmp(buffer, "/update ", 8) == 0) {
+        } else if (strncmp(buffer, "/update", 7) == 0) {
             handle_update_bio(server_socket, buffer);
         } else if (strncmp(buffer, "/gl ", 4) == 0) {
             handle_global_message(server_socket, buffer);
@@ -270,7 +283,7 @@ void *handle_user_commands(int server_socket) {
             handle_direct_message(server_socket, buffer);
         } else if (strncmp(buffer, "/gmsg ", 6) == 0) {
             handle_game_message(server_socket, buffer);
-        } else if (strncmp(buffer, "/m ", 3) == 0) {
+        } else if (strncmp(buffer, "/m ", 2) == 0) {
             handle_make_move(server_socket, buffer);
         } else if (strcmp(buffer, "/end") == 0) {
             handle_end_game(server_socket, buffer);
@@ -284,6 +297,12 @@ void *handle_user_commands(int server_socket) {
             handle_private(server_socket);
         } else if (strcmp(buffer, "/public") == 0) {
             handle_public(server_socket);
+        } else if (strcmp(buffer, "/decline") == 0) {
+            handle_decline(server_socket);
+        } else if (strcmp(buffer, "/accept") == 0) {
+            handle_accept(server_socket);
+        } else if (strncmp(buffer, "/challenge", strlen(CHALLENGE) + 1) == 0) {
+            handle_challenge(server_socket, buffer);
         } else {
             printf("Unknown command: %s\n", buffer);
         }
@@ -346,6 +365,9 @@ void handle_help() {
             "/online - Show online players\n"
             "/players - Show all players\n"
             "/games - Show available games\n"
+            "/challenge - Challenge player by pseudo\n"
+            "/accept - Accept a challenge\n"
+            "/decline - Decline a challenge\n"
             "/obs <game_id> - Observe a game\n"
             "/fr - View your friend list\n"
             "/addfr <pseudo> - Add a friend \n"
@@ -378,9 +400,7 @@ void handle_players(int server_socket) {
 }
 
 void handle_games(int server_socket) {
-    printf("Sending GAMES request\n");
-    const char *command = "GAMES\n";
-    send(server_socket, command, strlen(command), 0);
+    send_message(server_socket, SHOW_GAMES);
 }
 
 void handle_obs(int server_socket, const char *command) {
@@ -393,13 +413,34 @@ void handle_bio(int server_socket) {
 }
 
 void handle_view_bio(int server_socket, const char *command) {
-    printf("Sending VIEW BIO request: %s\n", command);
-    send(server_socket, command, strlen(command), 0);
-}
+    char pseudo[MAX_PSEUDO_LEN + 1] = {0}; // Initialize to ensure it's null-terminated
+    char buffer[19 + MAX_PSEUDO_LEN] = {0}; // Initialize to ensure it's null-terminated
 
+    // Extract the pseudo from the command
+    if (sscanf(command, "/pbio %10s", pseudo) == 1) { // Limit pseudo to MAX_PSEUDO_LEN
+        // Validate the pseudo
+        if (strlen(pseudo) == 0 || strlen(pseudo) > MAX_PSEUDO_LEN || contains_space(pseudo)) {
+            printf("Invalid pseudo for challenge. Ensure it is between 1 and %d characters and contains no spaces.\n",
+                   MAX_PSEUDO_LEN);
+            return;
+        }
+
+        // Perform additional logic for handling the challenge
+        strcat(buffer, VIEW_PLAYER_BIO);
+        strcat(buffer, " ");
+        strcat(buffer, pseudo);
+        strcat(buffer, "\n");
+
+        send_message(server_socket, buffer);
+    } else {
+        printf("Failed to extract pseudo. Ensure the command is in the correct format: /challenge <pseudo>\n");
+    }
+
+}
 void handle_update_bio(int server_socket, const char *command) {
-    printf("Sending UPDATE BIO request: %s\n", command);
-    send(server_socket, command, strlen(command), 0);
+    send_message(server_socket, UPDATE_BIO);
+    // read max 10 lines of new bio, concat then together, still separate each line with /n, do not allow empty lines
+
 }
 
 void handle_global_message(int server_socket, const char *command) {
@@ -417,9 +458,31 @@ void handle_game_message(int server_socket, const char *command) {
     send(server_socket, command, strlen(command), 0);
 }
 
+// command: /m 3
 void handle_make_move(int server_socket, const char *command) {
-    printf("Sending MAKE MOVE request: %s\n", command);
-    send(server_socket, command, strlen(command), 0);
+    const char *args = command + 3;
+
+    // Check if the pit number is a single digit
+    if (!isdigit(*args) || *(args + 1) != '\0') {
+        fprintf(stderr, "Error: Invalid pit number or extra arguments\n");
+        return;
+    }
+
+    // Convert the pit number to an integer
+    int pit_number = *args - '0';
+
+    // Check if the pit number is within the valid range (1-6)
+    if (pit_number < 1 || pit_number > 6) {
+        fprintf(stderr, "Error: Pit number must be between 1 and 6\n");
+        return;
+    }
+
+    // Construct the MOVE message
+    char message[BUFFER_SIZE];
+    snprintf(message, BUFFER_SIZE, "%s %d\n", MAKE_MOVE, pit_number);
+
+    // Send the message to the server
+    send_message(server_socket, message);
 }
 
 void handle_end_game(int server_socket, const char *command) {
@@ -462,3 +525,36 @@ void handle_public(int server_socket) {
     send(server_socket, command, strlen(command), 0);
 }
 
+void handle_decline(int server_socket) {
+    send_message(server_socket, DECLINE);
+}
+
+void handle_accept(int server_socket) {
+    send_message(server_socket, ACCEPT);
+}
+
+
+void handle_challenge(int server_socket, const char *command) {
+    char pseudo[MAX_PSEUDO_LEN + 1] = {0}; // Initialize to ensure it's null-terminated
+    char buffer[19 + MAX_PSEUDO_LEN] = {0}; // Initialize to ensure it's null-terminated
+
+    // Extract the pseudo from the command
+    if (sscanf(command, "/challenge %10s", pseudo) == 1) { // Limit pseudo to MAX_PSEUDO_LEN
+        // Validate the pseudo
+        if (strlen(pseudo) == 0 || strlen(pseudo) > MAX_PSEUDO_LEN || contains_space(pseudo)) {
+            printf("Invalid pseudo for challenge. Ensure it is between 1 and %d characters and contains no spaces.\n",
+                   MAX_PSEUDO_LEN);
+            return;
+        }
+
+        // Perform additional logic for handling the challenge
+        strcat(buffer, CHALLENGE);
+        strcat(buffer, " ");
+        strcat(buffer, pseudo);
+        strcat(buffer, "\n");
+
+        send_message(server_socket, buffer);
+    } else {
+        printf("Failed to extract pseudo. Ensure the command is in the correct format: /challenge <pseudo>\n");
+    }
+}
