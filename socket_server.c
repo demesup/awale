@@ -130,6 +130,8 @@ void save_player_to_file(Player *player);
 
 void load_players_from_file();
 
+void update_players_file();
+
 bool is_pseudo_taken(const char *pseudo);
 
 void send_active_games(Player *player);
@@ -469,6 +471,63 @@ Player *find_player_by_pseudo(const char *pseudo) {
     }
     return NULL;
 }
+
+/*
+void backup_file() {
+    char backup_path[256];
+    snprintf(backup_path, sizeof(backup_path), "%s.bak", PLAYER_FILE);
+
+    FILE *original_file = fopen(PLAYER_FILE, "r");
+    if (!original_file) {
+        perror("Error opening original file for backup");
+        return;
+    }
+
+    FILE *backup_file = fopen(backup_path, "w");
+    if (!backup_file) {
+        perror("Error opening backup file");
+        fclose(original_file);
+        return;
+    }
+
+    // Copy the contents of the original file to the backup file
+    char ch;
+    while ((ch = fgetc(original_file)) != EOF) {
+        fputc(ch, backup_file);
+    }
+
+    fclose(original_file);
+    fclose(backup_file);
+}
+
+void restore_from_backup() {
+    char backup_path[256];
+    snprintf(backup_path, sizeof(backup_path), "%s.bak", PLAYER_FILE);
+
+    FILE *backup_file = fopen(backup_path, "r");
+    if (!backup_file) {
+        perror("Error opening backup file for restoration");
+        return;
+    }
+
+    FILE *file = fopen(PLAYER_FILE, "w");
+    if (!file) {
+        perror("Error opening original file for restoration");
+        fclose(backup_file);
+        return;
+    }
+
+    // Copy the contents of the backup file to the original file
+    char ch;
+    while ((ch = fgetc(backup_file)) != EOF) {
+        fputc(ch, file);
+    }
+
+    fclose(backup_file);
+    fclose(file);
+    printf("File restored from backup.\n");
+}
+ */
 
 void update_players_file() {
     FILE *file = fopen(PLAYER_FILE, "w");
