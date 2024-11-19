@@ -47,7 +47,7 @@
 #define MAX_PASSWORD_LEN 10
 #define COMMAND_LENGTH 18
 #define MAX_BIO_LINES 10
-#define MAX_BIO_LENGTH 1024
+#define MAX_BIO_LINE_LENGTH 80
 
 #define HASH_SIZE 256
 
@@ -59,24 +59,25 @@ typedef struct Move {
 } Move;
 
 typedef struct {
-    char pseudo[MAX_PSEUDO_LEN];
-    char password[HASH_SIZE];
-    int pits[PITS];
-    int store;
-    Move *move_history;
     int socket;
 
-    bool in_game;
-    int game_id;
-    bool in_challenge;
-    char *challenged_by;
-    char *challenged;
+    char pseudo[MAX_PSEUDO_LEN];
+    char password[HASH_SIZE];
 
     bool is_online;
-
     bool private;
-    char bio[MAX_BIO_LINES * MAX_BIO_LENGTH];
+    char bio[MAX_BIO_LINES * MAX_BIO_LINE_LENGTH];
     char friends[MAX_FRIENDS][MAX_PSEUDO_LEN];
+
+    int pits[PITS];
+    int store;
+
+    Move *move_history;
+    bool in_challenge;
+    bool in_game;
+    int game_id;
+    char *challenged_by;
+    char *challenged;
 } Player;
 
 typedef struct {
@@ -121,7 +122,7 @@ void handle_logout(Player *player);
 
 void handle_see_bio(Player *player);
 
-void handle_update_bio(Player *player);
+void handle_update_bio(Player *player, char *command);
 
 void handle_see_player_bio(Player *player_target, char *command);
 
@@ -165,6 +166,8 @@ int add_game(Game *new_game);
 void remove_game(int game_id);
 
 void clean_up_game(Game *game);
+
+void clean_player_game_state(Player *player);
 
 void make_move(Player *player, char *command);
 
@@ -348,7 +351,7 @@ void menu(Player *player) {
         } else if (strcmp(command, VIEW_PLAYER_BIO) == 0) {
             handle_see_player_bio(player, buffer);
         } else if (strcmp(command, UPDATE_BIO) == 0) {
-            handle_update_bio(player);
+            handle_update_bio(player, buffer);
         } else if (strcmp(command, CHALLENGE) == 0) {
             handle_challenge(player, buffer);
         } else if (strcmp(command, ACCEPT) == 0) {
@@ -467,8 +470,43 @@ Player *find_player_by_pseudo(const char *pseudo) {
     return NULL;
 }
 
+void update_players_file() {
+    FILE *file = fopen(PLAYER_FILE, "w");
+    if (!file) {
+        perror("Error opening file for writing");
+        return;
+    }
+
+    // Write all players to the file
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (players[i].pseudo[0] != '\0') {  // Check if player slot is not empty
+            fprintf(file, "%s %s\n", players[i].pseudo, players[i].password);
+
+            // Write friends to the file
+            fprintf(file, "friends: ");
+            for (int i = 0; i < MAX_FRIENDS && players[i].friends[i][0] != '\0'; i++) {
+                fprintf(file, "%s ", players[i].friends[i]);
+            }
+            fprintf(file, "\n");
+
+            // Write bio to the file
+            fprintf(file, "bio:\n");
+            for (int i = 0; i < MAX_BIO_LINES; i++) {
+                if (players[i].bio[0] != '\0' && strspn(players[i].bio, " \t\n") != strlen(players[i].bio)) {
+                    // Write the bio line if it's not empty or whitespace-only
+                    fprintf(file, "%s\n", players[i].bio);
+                }            }
+
+            fprintf(file, "-----\n");
+        }
+    }
+
+    fclose(file);
+    printf("FIle updated successfully.\n");
+}
+
 void handle_see_bio(Player *player) {
-    char bio_output[MAX_BIO_LINES * MAX_BIO_LENGTH] = "Bio:\n";
+    char bio_output[MAX_BIO_LINES * MAX_BIO_LINE_LENGTH] = "Bio:\n";
 
     if (strlen(player->bio) > 0) {
         strcat(bio_output, player->bio);
@@ -479,24 +517,42 @@ void handle_see_bio(Player *player) {
     }
 }
 
-void handle_update_bio(Player *player) {
-    send_message(player->socket, "Waiting for the new bio\n");
-    char buffer[BUFFER_SIZE];  // Buffer to hold the command received from the client
-    int bytes_received;  // To store the number of bytes received from the socket
+void handle_update_bio(Player *player, char *command) {
+    // Create a buffer to hold the entire bio
+    char bio[MAX_BIO_LINES * MAX_BIO_LINE_LENGTH];
+    memset(bio, 0, sizeof(bio));  // Clear the buffer before use
 
-    while (1) {
-        bytes_received = read(player->socket, buffer, sizeof(buffer));
-        if (bytes_received <= 0) {
-            if (bytes_received == 0) {
-                handle_logout(player);
-            } else {
-                fflush(stdout);
-                printf("Error reading from client\n");
-            }
-            return;
+    // Extract the bio content from the command
+    if (sscanf(command, "UPDATE_BIO %[^\n]", bio) != 1) {
+        send_message(player->socket, "Error reading bio\n");
+        return;
+    }
+    char processed_bio[MAX_BIO_LINES * MAX_BIO_LINE_LENGTH];
+    int j = 0;
+    for (int i = 0; bio[i] != '\0'; i++) {
+        if (bio[i] == '\\' && bio[i + 1] == 'n') {
+            processed_bio[j++] = '\n'; // Add a newline
+            i++;                      // Skip the 'n'
+        } else {
+            processed_bio[j++] = bio[i];
         }
     }
+    processed_bio[j] = '\0'; // Null-terminate the string
+    if (j > 0 && processed_bio[j - 1] == '\n') {
+        processed_bio[j - 1] = '\0';
+    }
+
+    // Save the processed bio to the player's bio
+    strncpy(player->bio, processed_bio, sizeof(player->bio) - 1);
+    player->bio[sizeof(player->bio) - 1] = '\0'; // Ensure null termination
+
+    update_players_file();
+
+    // Send confirmation to the client
+    send_message(player->socket, "Your bio has been updated successfully.\n");
+
 }
+
 
 void handle_see_player_bio(Player *player_target, char *command) {
     char pseudo[MAX_PSEUDO_LEN];
@@ -509,7 +565,7 @@ void handle_see_player_bio(Player *player_target, char *command) {
     }
     Player *player = find_player_by_pseudo(pseudo);
 
-    char bio_output[MAX_BIO_LINES * MAX_BIO_LENGTH] = "Bio:\n";
+    char bio_output[MAX_BIO_LINES * MAX_BIO_LINE_LENGTH] = "Bio:\n";
 
     if (strlen(player->bio) > 0) {
         strcat(bio_output, player->bio);
@@ -613,6 +669,35 @@ void save_player_to_file(Player *player) {
     }
 }
 
+
+void save_bio_to_file(Player *player) {
+    FILE *file = fopen(PLAYER_FILE, "w");
+    if (!file) {
+        perror("Error opening file for writing");
+        return;
+    }
+
+    // Write all players to the file
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (players[i].pseudo[0] != '\0') {  // Check if player slot is not empty
+            fprintf(file, "%s %s\n", players[i].pseudo, players[i].password);
+
+            fprintf(file, "friends: ");
+            for (int i = 0; i < MAX_FRIENDS && player->friends[i][0] != '\0'; i++) {
+                fprintf(file, "%s ", player->friends[i]);
+            }
+            fprintf(file, "\n");
+            // Write the bio, ensuring the "bio:" label
+            fprintf(file, "bio:\n%s\n", players[i].bio);
+
+            // Write the "-----" separator after each player's data
+            fprintf(file, "-----\n");
+        }
+    }
+
+    fclose(file);
+    printf("Players file updates.\n");
+}
 
 Player *handle_login(char *pseudo, char *password, int client_socket) {
     pthread_mutex_lock(&player_mutex);  // Locking the mutex to ensure thread-safety
@@ -721,15 +806,29 @@ void handle_logout(Player *player) {
     }
 
     if (player->in_challenge) {
-       // handle exit
+        if (player->challenged_by != NULL) {
+            Player *challenged_by_player = find_player_by_pseudo(player->challenged_by);
+            if (challenged_by_player != NULL) {
+                challenged_by_player->in_challenge = false;
+                challenged_by_player->challenged = NULL;
+            }
+        }
+
+        if (player->challenged != NULL) {
+            Player *challenged_player = find_player_by_pseudo(player->challenged);
+            if (challenged_player != NULL) {
+                challenged_player->in_challenge = false;
+                challenged_player->challenged_by = NULL;
+            }
+        }
+
+        player->in_challenge = false;
+        player->challenged_by = NULL;
+        player->challenged = NULL;
     }
 
     player->is_online = false;
-    player->in_challenge = false;
-    player->challenged_by = "";
-    player->challenged = "";
-    player->in_game = false;  // Ensure they are not in-game
-    player->socket = -1;     // Reset the socket
+    player->socket = -1;
 
     pthread_mutex_unlock(&player_mutex);
 
@@ -785,16 +884,25 @@ void initialize_game(Player *player1, Player *player2) {
     send_boards_players(new_game->player1, new_game->player2);
 }
 
+void clean_player_game_state(Player *player) {
+    player->in_game = false;
+    player->store = 0;
+    memset(player->pits, 0, sizeof(player->pits));
+
+    Move *current_move = player->move_history;
+    while (current_move != NULL) {
+        Move *next_move = current_move->next;
+        free(current_move);
+        current_move = next_move;
+    }
+    player->move_history = NULL; // Ensure the pointer is reset
+}
 
 void clean_up_game(Game *game) {
     send_message(game->player1->socket, "Game finished\n");
     send_message(game->player2->socket, "Game finished\n");
-    game->player1->in_game = false;
-    game->player1->store = 0;
-    game->player1->move_history = NULL;
-    game->player2->in_game = false;
-    game->player2->store = 0;
-    game->player2->move_history = NULL;
+    clean_player_game_state(game->player1);
+    clean_player_game_state(game->player2);
 }
 
 
@@ -815,6 +923,56 @@ void initialize_board(Game *game) {
     }
     game->player1->store = 0;
     game->player2->store = 0;
+}
+
+
+void reset_player(Player *player) {
+    if (player == NULL) return;
+
+    // Handle in-game state
+    if (player->in_game) {
+        remove_game(player->game_id); // Call remove_game with the player's game ID
+    }
+
+    // Handle in-challenge state
+    if (player->in_challenge) {
+        if (player->challenged_by != NULL) {
+            Player *challenged_by_player = find_player_by_pseudo(player->challenged_by);
+            if (challenged_by_player != NULL) {
+                challenged_by_player->in_challenge = false;
+                challenged_by_player->challenged = NULL;
+            }
+        }
+
+        if (player->challenged != NULL) {
+            Player *challenged_player = find_player_by_pseudo(player->challenged);
+            if (challenged_player != NULL) {
+                challenged_player->in_challenge = false;
+                challenged_player->challenged_by = NULL;
+            }
+        }
+
+        player->in_challenge = false;
+        player->challenged_by = NULL;
+        player->challenged = NULL;
+    }
+
+    // Reset all other fields
+    memset(player->pseudo, 0, sizeof(player->pseudo));
+    memset(player->password, 0, sizeof(player->password));
+    memset(player->pits, 0, sizeof(player->pits));
+    player->store = 0;
+
+    if (player->move_history != NULL) {
+        free(player->move_history); // Free dynamic memory for move_history
+        player->move_history = NULL;
+    }
+
+    player->socket = -1;
+    player->is_online = false;
+    player->private = false;
+    memset(player->bio, 0, sizeof(player->bio));
+    memset(player->friends, 0, sizeof(player->friends));
 }
 
 void remove_game(int game_id) {
@@ -838,19 +996,20 @@ void decline_challenge(Player *player) {
         return;
     }
     Player *challenger = find_player_by_pseudo(player->challenged_by);
-    if (challenger == NULL) {
+    if (challenger == NULL || !challenger->is_online) {
+        player->challenged_by = NULL;
+        send_message(player->socket, "User is not online anymore!\n");
         return;
     }
     // Set players as in a game
     send_message(challenger->socket, "Your challenge has been declined.\n");
     send_message(player->socket, "You declined the challenge.\n");
+
     // Set players as in a game
     player->in_challenge = false;
-    player->challenged = "";
-    player->challenged_by = "";
+    player->challenged_by = NULL;
     challenger->in_challenge = false;
-    challenger->challenged = "";
-    challenger->challenged_by = "";
+    challenger->challenged = NULL;
 }
 
 void accept_challenge(Player *player) {
@@ -859,15 +1018,18 @@ void accept_challenge(Player *player) {
         return;
     }
     Player *challenger = find_player_by_pseudo(player->challenged_by);
-    if (challenger == NULL) {
+    if (challenger == NULL || !challenger->is_online) {
+        player->challenged_by = NULL;
+        send_message(player->socket, "User is not online anymore!\n");
         return;
     }
     send_message(player->socket, "You accepted the challenge!\n");
     send_message(challenger->socket, "Your challenge has been accepted!\n");
 
-    // Set players as in a game
     player->in_challenge = false;
+    player->challenged_by = NULL;
     challenger->in_challenge = false;
+    challenger->challenged = NULL;
 
     player->in_game = true;
     challenger->in_game = true;
@@ -922,9 +1084,11 @@ void send_board(int socket, Player *player1, Player *player2) {
 void handle_challenge(Player *player, char *command) {
     if (player->in_challenge) {
         send_message(player->socket, "Wait for a response from previous player challenged\n");
+        return;
     }
     if (player->in_game) {
         send_message(player->socket, "You are already in game\n");
+        return;
     }
 
     char challenge_user[MAX_PSEUDO_LEN];
@@ -935,7 +1099,6 @@ void handle_challenge(Player *player, char *command) {
             return;
         }
     }
-
 
     verify_not_self_challenge(player, challenge_user);
 

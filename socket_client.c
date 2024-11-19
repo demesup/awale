@@ -13,7 +13,7 @@
 #define MAX_PSEUDO_LEN 10
 #define MAX_PASSWORD_LEN 10
 #define MAX_BIO_LINES 10
-#define MAX_BIO_LINE_LENGTH 100
+#define MAX_BIO_LINE_LENGTH 80 // https://en.wikipedia.org/wiki/Characters_per_line
 
 int logged_in = 0;
 int answer_received = 0;
@@ -38,7 +38,7 @@ const char *FRIENDS_ONLY = "FRIENDS_ONLY\n";
 const char *PUBLIC_OBSERVE = "PUBLIC\n";
 const char *VIEW_BIO = "VIEW_BIO\n";
 const char *VIEW_PLAYER_BIO = "VIEW_PLAYER_BIO";
-const char *UPDATE_BIO = "UPDATE_BIO\n";
+const char *UPDATE_BIO = "UPDATE_BIO";
 const char *UPDATE_BIO_BODY = "UPDATE_BIO_BODY";
 const char *GLOBAL_MESSAGE = "GLOBAL_MESSAGE";
 const char *GAME_MESSAGE = "GAME_MESSAGE";
@@ -241,12 +241,12 @@ void *listen_to_server(void *arg) {
 
     if (bytes_received == 0) {
         printf("Disconnected from the server.\n");
+        logged_in = 0;
+        exit(0);  // Close the application if the connection is lost
+        return NULL;
     } else if (bytes_received < 0) {
         perror("Error receiving data from server");
     }
-
-    exit(0);  // Close the application if the connection is lost
-    return NULL;
 }
 
 // Function to handle user commands
@@ -256,7 +256,7 @@ void *handle_user_commands(int server_socket) {
 
     printf("You can now issue commands. Type /help to see available commands.\n");
 
-    while (1) {
+    while (logged_in) {
         read_line("", buffer, BUFFER_SIZE);
 
         if (strcmp(buffer, "/help") == 0) {
@@ -281,7 +281,7 @@ void *handle_user_commands(int server_socket) {
             handle_global_message(server_socket, buffer);
         } else if (strncmp(buffer, "/msg ", 5) == 0) {
             handle_direct_message(server_socket, buffer);
-        } else if (strncmp(buffer, "/gmsg ", 6) == 0) {
+        } else if (strncmp(buffer, "/chat ", 6) == 0) {
             handle_game_message(server_socket, buffer);
         } else if (strncmp(buffer, "/m ", 2) == 0) {
             handle_make_move(server_socket, buffer);
@@ -426,7 +426,7 @@ void handle_view_bio(int server_socket, const char *command) {
         }
 
         // Perform additional logic for handling the challenge
-        strcat(buffer, VIEW_PLAYER_BIO);
+        strcpy(buffer, VIEW_PLAYER_BIO);
         strcat(buffer, " ");
         strcat(buffer, pseudo);
         strcat(buffer, "\n");
@@ -438,8 +438,8 @@ void handle_view_bio(int server_socket, const char *command) {
 
 }
 
+//todo: do not allow \n and \o
 void handle_update_bio(int server_socket, const char *command) {
-    send_message(server_socket, UPDATE_BIO);
     // read max 10 lines of new bio, concat then together, still separate each line with /n, do not allow empty lines
     char bio[BUFFER_SIZE] = ""; // Buffer to hold the concatenated bio
     char line[BUFFER_SIZE]; // Temporary buffer for each line
@@ -456,16 +456,22 @@ void handle_update_bio(int server_socket, const char *command) {
         // Concatenate the line to the bio
         if (strlen(line) < MAX_BIO_LINE_LENGTH) {
             strcat(bio, line);
-            strcat(bio, "\n"); // Separate each line with a newline character
+            strcat(bio, "\\n"); // Separate each line with a newline character
             line_count++;
-        } else if ((strlen(line) + strlen(bio)) >= MAX_BIO_LINE_LENGTH * MAX_BIO_LINES) {
+        } else if ((strlen(line) + strlen(bio)) > MAX_BIO_LINE_LENGTH * MAX_BIO_LINES) {
             printf("\nThe line entered is too long, try again. \n\tChars left: %d\n\t Chars passed: %d\n",
                    MAX_BIO_LINE_LENGTH * MAX_BIO_LINES - strlen((bio)), strlen((line)));
             continue;
         } else {
+            int additional_lines_needed = (strlen(line) + MAX_BIO_LINE_LENGTH - 1) / MAX_BIO_LINE_LENGTH; // Round up
+
+            if (line_count + additional_lines_needed > MAX_BIO_LINES) {
+                printf("\nThe entered line exceeds the maximum bio size.\n"
+                       "You need %d additional lines, but only %d lines are available.\n",
+                       additional_lines_needed, MAX_BIO_LINES - line_count);
+                continue; // Ask the user to re-enter the line
+            }
             printf("The line entered is too long. Breaking it down...\n");
-
-
 
             // Split the line into smaller parts
             char *line_part = line;
@@ -475,7 +481,7 @@ void handle_update_bio(int server_socket, const char *command) {
                 strncpy(temp, line_part, MAX_BIO_LINE_LENGTH);
                 temp[MAX_BIO_LINE_LENGTH] = '\0'; // Ensure the part is null-terminated
                 strcat(bio, temp);
-                strcat(bio, "\n");
+                strcat(bio, "\\n");
                 line_count++;
 
                 line_part += MAX_BIO_LINE_LENGTH; // Move to the next part
@@ -484,14 +490,19 @@ void handle_update_bio(int server_socket, const char *command) {
             // If there's any remaining part, add it to the bio
             if (line_count < MAX_BIO_LINES && strlen(line_part) > 0) {
                 strcat(bio, line_part);
-                strcat(bio, "\n");
+                strcat(bio, "\\n");
                 line_count++;
             }
         }
     }
 
-    // After collecting the bio, send it to the server
-    printf("Your updated bio is:\n%s|\n", bio);
+    char buffer[BUFFER_SIZE] = {0}; // Initialize to ensure it's null-terminated
+    strcat(buffer, "UPDATE_BIO");
+    strcat(buffer, " ");
+    strcat(buffer, bio);
+    strcat(buffer, "\n");
+
+    send_message(server_socket, buffer);
 }
 
 void handle_global_message(int server_socket, const char *command) {
