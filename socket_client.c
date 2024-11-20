@@ -31,11 +31,12 @@ const char *SHOW_GAMES = "SHOW_GAMES\n";
 const char *CHALLENGE = "CHALLENGE";
 const char *ACCEPT = "ACCEPT\n";
 const char *DECLINE = "DECLINE\n";
-const char *OBSERVE_GAME = "OBSERVE_GAME";
+const char *OBSERVE = "OBSERVE";
+const char *QUIT_OBSERVE = "QUIT_OBSERVE\n";
 const char *VIEW_FRIEND_LIST = "VIEW_FRIEND_LIST\n";
 const char *ADD_FRIEND = "ADD_FRIEND";
 const char *FRIENDS_ONLY = "FRIENDS_ONLY\n";
-const char *PUBLIC_OBSERVE = "PUBLIC\n";
+const char *PUBLIC = "PUBLIC\n";
 const char *VIEW_BIO = "VIEW_BIO\n";
 const char *VIEW_PLAYER_BIO = "VIEW_PLAYER_BIO";
 const char *UPDATE_BIO = "UPDATE_BIO";
@@ -74,6 +75,8 @@ void handle_players(int server_socket);
 void handle_games(int server_socket);
 
 void handle_obs(int server_socket, const char *command);
+
+void handle_quit_obs(int server_socket);
 
 void handle_bio(int server_socket);
 
@@ -271,6 +274,8 @@ void *handle_user_commands(int server_socket) {
             handle_games(server_socket);
         } else if (strncmp(buffer, "/obs ", 5) == 0) {
             handle_obs(server_socket, buffer);
+        } else if (strncmp(buffer, "/qobs ", 5) == 0) {
+            handle_quit_obs(server_socket);
         } else if (strcmp(buffer, "/bio") == 0) {
             handle_bio(server_socket);
         } else if (strncmp(buffer, "/pbio ", 5) == 0) {
@@ -368,7 +373,8 @@ void handle_help() {
             "/challenge - Challenge player by pseudo\n"
             "/accept - Accept a challenge\n"
             "/decline - Decline a challenge\n"
-            "/obs <game_id> - Observe a game\n"
+            "/obs <pseudo> - Observe a game the player <pseudo> is in\n"
+            "/qobs - Quit observing the game\n"
             "/fr - View your friend list\n"
             "/addfr <pseudo> - Add a friend \n"
             "/private - Allow only friends to observe the games I am in \n"
@@ -404,8 +410,31 @@ void handle_games(int server_socket) {
 }
 
 void handle_obs(int server_socket, const char *command) {
-    printf("Sending OBSERVE request: %s\n", command);
-    send(server_socket, command, strlen(command), 0);
+    char pseudo[MAX_PSEUDO_LEN + 1] = {0}; // Initialize to ensure it's null-terminated
+    char buffer[10 + MAX_PSEUDO_LEN] = {0}; // Initialize to ensure it's null-terminated
+
+    // Extract the pseudo from the command
+    if (sscanf(command, "/obs %10s", pseudo) == 1) { // Limit pseudo to MAX_PSEUDO_LEN
+        // Validate the pseudo
+        if (strlen(pseudo) == 0 || strlen(pseudo) > MAX_PSEUDO_LEN || contains_space(pseudo)) {
+            printf("Invalid pseudo for challenge. Ensure it is between 1 and %d characters and contains no spaces.\n",
+                   MAX_PSEUDO_LEN);
+            return;
+        }
+
+        strcpy(buffer, OBSERVE);
+        strcat(buffer, " ");
+        strcat(buffer, pseudo);
+        strcat(buffer, "\n");
+
+        send_message(server_socket, buffer);
+    } else {
+        printf("Failed to extract pseudo. Ensure the command is in the correct format: /challenge <pseudo>\n");
+    }
+}
+
+void handle_quit_obs(int server_socket) {
+    send_message(server_socket, QUIT_OBSERVE);
 }
 
 void handle_bio(int server_socket) {
