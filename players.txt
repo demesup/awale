@@ -1,27 +1,31 @@
-ma ma
-friends: test 
+ma ma 1
+friends: test lo TEST 
 bio:
 kandnasjadaskd
 as;dlmlkasndjnasd
 asdljnkasbjsablhfhasajflnasjfalf
 -----
-test test
-friends: test 
+test test 0
+friends: ma 
 bio:
 -----
-lo lo
-friends: test 
+lo lo 0
+friends: 
 bio:
 -----
-TEST 1234
-friends: test 
+TEST 1234 0
+friends: 
 bio:
 -----
-so so
-friends: test 
+so so 1
+friends: 
 bio:
 -----
-stalker xxx
-friends: test 
+stalker xxx 1
+friends: 
+bio:
+-----
+me me 0
+friends: 
 bio:
 -----

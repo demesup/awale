@@ -15,14 +15,18 @@
 #define SHOW_PLAYERS "SHOW_PLAYERS"
 #define SHOW_GAMES "SHOW_GAMES"
 #define CHALLENGE "CHALLENGE"
+#define REVOKE "REVOKE_CHALLENGE"
+#define PENDING "PENDING"
 #define ACCEPT "ACCEPT"
 #define DECLINE "DECLINE"
 #define OBSERVE "OBSERVE"
 #define QUIT_OBSERVE "QUIT_OBSERVE"
 #define VIEW_FRIEND_LIST "VIEW_FRIEND_LIST"
 #define ADD_FRIEND "ADD_FRIEND"
-#define FRIENDS_ONLY "FRIENDS_ONLY"
+#define REMOVE_FRIEND "REMOVE_FRIEND"
 #define PUBLIC "PUBLIC"
+#define PRIVATE "PRIVATE"
+#define ACCESS "ACCESS"
 #define VIEW_BIO "VIEW_BIO"
 #define VIEW_PLAYER_BIO "VIEW_PLAYER_BIO"
 #define UPDATE_BIO "UPDATE_BIO"
@@ -37,14 +41,14 @@
 
 #define MAX_ONLINE_PLAYERS 100
 #define MAX_PLAYERS 1000
-#define MAX_FRIENDS 15
+#define MAX_FRIENDS 20
 #define MAX_GAMES 50
 #define BUFFER_SIZE 1024
 #define PLAYER_FILE "players.txt"
 #define PITS 6  // Number of pits per player
 #define INITIAL_SEEDS 4  // Initial seeds in each pit
 
-#define MAX_PSEUDO_LEN 10
+#define MAX_PSEUDO_LEN 11
 #define MAX_PASSWORD_LEN 10
 #define COMMAND_LENGTH 18
 #define MAX_BIO_LINES 10
@@ -69,6 +73,7 @@ typedef struct {
     bool private;
     char bio[MAX_BIO_LINES * MAX_BIO_LINE_LENGTH];
     char friends[MAX_FRIENDS][MAX_PSEUDO_LEN];
+    int friend_count;
 
     int pits[PITS];
     int store;
@@ -121,6 +126,16 @@ Player *handle_login(char *pseudo, char *password, int client_socket);
 
 void handle_logout(Player *player);
 
+void update_access(Player *player, int private);
+
+void send_access(Player *player);
+
+void update_observers(int game_id);
+
+bool can_observe(Player *player, int game_id);
+
+bool in_friend_list(Player *player, Player *target);
+
 void handle_see_bio(Player *player);
 
 void handle_update_bio(Player *player, char *command);
@@ -142,6 +157,12 @@ void send_online_players(Player *player);
 void send_all_players(Player *player);
 
 void menu(Player *player);
+
+void send_friend_list(Player *player);
+
+void handle_add_friend(Player *player, char *command);
+
+void handle_remove_friend(Player *player, char *command);
 
 /** GAME */
 void initialize_board(Game *game);
@@ -183,7 +204,11 @@ void add_observer(Player *observer, Player *to_observe);
 void remove_observer(Player *observer);
 
 /** CHALLENGE */
+void send_pending_challenge(Player *player);
+
 void handle_challenge(Player *player, char *command);
+
+void handle_revoke_challenge(Player *player);
 
 bool verify_not_self_challenge(Player *player, char *challenge_user);
 
@@ -364,6 +389,10 @@ void menu(Player *player) {
             handle_update_bio(player, buffer);
         } else if (strcmp(command, CHALLENGE) == 0) {
             handle_challenge(player, buffer);
+        } else if (strcmp(command, REVOKE) == 0) {
+            handle_revoke_challenge(player);
+        } else if (strcmp(command, PENDING) == 0) {
+            send_pending_challenge(player);
         } else if (strcmp(command, ACCEPT) == 0) {
             accept_challenge(player);
         } else if (strcmp(command, DECLINE) == 0) {
@@ -377,11 +406,17 @@ void menu(Player *player) {
         } else if (strcmp(command, QUIT_OBSERVE) == 0) {
             handle_quit_observe(player);
         } else if (strcmp(command, ADD_FRIEND) == 0) {
-            printf("Handling ADD_FRIEND command...\n");
-            // Handle the ADD_FRIEND command here
-        } else if (strcmp(command, FRIENDS_ONLY) == 0) {
-            printf("Handling FRIENDS_ONLY command...\n");
-            // Handle the FRIENDS_ONLY command here
+            handle_add_friend(player, buffer);
+        } else if (strcmp(command, REMOVE_FRIEND) == 0) {
+            handle_remove_friend(player, buffer);
+        } else if (strcmp(command, VIEW_FRIEND_LIST) == 0) {
+            send_friend_list(player);
+        } else if (strcmp(command, PRIVATE) == 0) {
+            update_access(player, 1);
+        } else if (strcmp(command, PUBLIC) == 0) {
+            update_access(player, 0);
+        } else if (strcmp(command, ACCESS) == 0) {
+            send_access(player);
         } else {
             printf("Unknown command: %s\n", command);
         }
@@ -394,16 +429,19 @@ void load_players_from_file() {
     if (file) {
         char pseudo[MAX_PSEUDO_LEN], password[HASH_SIZE];
         char line[256];  // Temporary buffer to read lines from file
+        int private;
 
-        while (fscanf(file, "%s %s", pseudo, password) == 2) {
+        while (fscanf(file, "%s %s %d", pseudo, password, &private) == 3) {
             for (int i = 0; i < MAX_PLAYERS; i++) {
                 if (players[i].pseudo[0] == '\0') {
                     // Fill player information
                     strcpy(players[i].pseudo, pseudo);
                     strcpy(players[i].password, password);
                     players[i].is_online = false;
+                    players[i].private = private;
                     players[i].socket = -1;
                     players[i].game_id = -1;
+                    players[i].friend_count = 0;
                     players[i].challenged_by[0] = '\0';
                     players[i].challenged[0] = '\0';
                     players[i].observing[0] = '\0';
@@ -415,17 +453,25 @@ void load_players_from_file() {
                     }
 
                     // Read through the file until "bio:" or "friends:" are processed
-                    int friend_index = 0;
                     while (fgets(line, sizeof(line), file)) {
                         // Read friends list (looking for "friends:")
                         if (strncmp(line, "friends:", 8) == 0) {
-                            while (fscanf(file, "%s", line) == 1 && friend_index < MAX_FRIENDS) {
-                                // Stop if we reach bio or separator
-                                if (strncmp(line, "bio:", 4) == 0 || strncmp(line, "-----", 5) == 0) {
+                            if (line[strlen(line) - 1] == '\n') {
+                                line[strlen(line) - 1] = '\0';
+                            }
+                            char *friends_list = line + 9;
+                            char *friend_name = strtok(friends_list, " ");
+
+                            // Extract each friend's name
+                            while (friend_name != NULL && players[i].friend_count < MAX_FRIENDS) {
+                                if (strcmp(friend_name, "\n") == 0) {
                                     break;
                                 }
-                                strcpy(players[i].friends[friend_index], line);
-                                friend_index++;
+                                strncpy(players[i].friends[players[i].friend_count], friend_name,
+                                        MAX_PSEUDO_LEN - 1);
+                                players[i].friends[players[i].friend_count][MAX_PSEUDO_LEN - 1] = '\0';
+                                players[i].friend_count++;
+                                friend_name = strtok(NULL, " "); // Move to the next name
                             }
                         }
 
@@ -433,22 +479,23 @@ void load_players_from_file() {
                         if (strncmp(line, "bio:", 4) == 0) {
                             players[i].bio[0] = '\0';  // Clear bio before appending new content
                             while (fgets(line, sizeof(line), file)) {
+                                if (strcmp(line, "\r\n") == 0) {
+                                    continue;
+                                }
                                 // If we hit the "-----" separator, we stop reading bio data
                                 if (strncmp(line, "-----", 5) == 0) {
                                     break;
                                 }
-                                // Append bio content (remove newline character)
-                                line[strcspn(line, "\n")] = 0;  // Remove trailing newline
-                                strcat(players[i].bio, "\n");
+                                // Append bio content with a newline (remove trailing newline first)
+                                line[strcspn(line, "\n")] = 0;
+                                if (strlen(players[i].bio) > 0) {
+                                    strcat(players[i].bio, "\n");
+                                }
                                 strcat(players[i].bio, line);
-                                strcat(players[i].bio, " ");  // Add space after each line of bio
                             }
                         }
 
-                        clean_bio(players[i].bio);
-
-
-                        // Stop processing after reaching end of bio and friends
+                        // Stop processing after reaching the separator
                         if (strncmp(line, "-----", 5) == 0) {
                             break;
                         }
@@ -539,6 +586,8 @@ void restore_from_backup() {
  */
 
 void update_players_file() {
+    pthread_mutex_lock(&player_mutex);
+
     FILE *file = fopen(PLAYER_FILE, "w");
     if (!file) {
         perror("Error opening file for writing");
@@ -548,22 +597,19 @@ void update_players_file() {
     // Write all players to the file
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (players[i].pseudo[0] != '\0') {  // Check if player slot is not empty
-            fprintf(file, "%s %s\n", players[i].pseudo, players[i].password);
+            fprintf(file, "%s %s %d\n", players[i].pseudo, players[i].password, players[i].private);
 
             // Write friends to the file
             fprintf(file, "friends: ");
-            for (int i = 0; i < MAX_FRIENDS && players[i].friends[i][0] != '\0'; i++) {
-                fprintf(file, "%s ", players[i].friends[i]);
+            for (int j = 0; j < MAX_FRIENDS && players[i].friends[j][0] != '\0'; j++) {
+                fprintf(file, "%s ", players[i].friends[j]);
             }
             fprintf(file, "\n");
 
             // Write bio to the file
             fprintf(file, "bio:\n");
-            for (int i = 0; i < MAX_BIO_LINES; i++) {
-                if (players[i].bio[0] != '\0' && strspn(players[i].bio, " \t\n") != strlen(players[i].bio)) {
-                    // Write the bio line if it's not empty or whitespace-only
-                    fprintf(file, "%s\n", players[i].bio);
-                }
+            if (players[i].bio[0] != '\0') {
+                fprintf(file, "%s\n", players[i].bio);
             }
 
             fprintf(file, "-----\n");
@@ -571,7 +617,25 @@ void update_players_file() {
     }
 
     fclose(file);
-    printf("FIle updated successfully.\n");
+    pthread_mutex_unlock(&player_mutex);
+    printf("File updated successfully.\n");
+}
+
+void send_access(Player *player) {
+    if (player->private) {
+        send_message(player->socket, "Your access level is private.\n");
+    } else {
+        send_message(player->socket, "Your access level is public.\n");
+    }
+}
+
+void update_access(Player *player, int private) {
+    player->private = private;
+    if (player->game_id != -1 && private) {
+        update_observers(player->game_id);
+    }
+    update_players_file();
+    send_access(player);
 }
 
 void handle_see_bio(Player *player) {
@@ -584,6 +648,7 @@ void handle_see_bio(Player *player) {
     } else {
         send_message(player->socket, "You haven't added a bio yet.\n");
     }
+    memset(bio_output, 0, sizeof(bio_output));
 }
 
 void handle_update_bio(Player *player, char *command) {
@@ -594,6 +659,7 @@ void handle_update_bio(Player *player, char *command) {
     // Extract the bio content from the command
     if (sscanf(command, "UPDATE_BIO %[^\n]", bio) != 1) {
         send_message(player->socket, "Error reading bio\n");
+        memset(bio, 0, sizeof(bio));
         return;
     }
     char processed_bio[MAX_BIO_LINES * MAX_BIO_LINE_LENGTH];
@@ -619,7 +685,7 @@ void handle_update_bio(Player *player, char *command) {
 
     // Send confirmation to the client
     send_message(player->socket, "Your bio has been updated successfully.\n");
-
+    memset(bio, 0, sizeof(bio));
 }
 
 
@@ -629,6 +695,7 @@ void handle_see_player_bio(Player *player_target, char *command) {
         // Validate the pseudo
         if (strlen(pseudo) == 0 || strlen(pseudo) > MAX_PSEUDO_LEN) {
             send_message(player_target->socket, "Error reading pseudo\n");
+            memset(pseudo, 0, sizeof(pseudo));
             return;
         }
     }
@@ -643,12 +710,13 @@ void handle_see_player_bio(Player *player_target, char *command) {
     } else {
         send_message(player_target->socket, "The player hasn't added a bio yet.\n");
     }
+    memset(pseudo, 0, sizeof(pseudo));
 }
 
 void send_active_games(Player *player) {
     pthread_mutex_lock(&player_mutex);
-
     char response[BUFFER_SIZE];
+
     strcpy(response, "Active games:\n");
     for (int i = 0; i < active_game_count; i++) {
         Game *game = active_games[i];
@@ -660,14 +728,16 @@ void send_active_games(Player *player) {
     }
     send_message(player->socket, response);
 
+    memset(response, 0, sizeof(response));
     pthread_mutex_unlock(&player_mutex);
+
 }
 
 // Send list of online players
 void send_online_players(Player *player) {
     pthread_mutex_lock(&player_mutex);
-
     char response[BUFFER_SIZE];
+
     strcpy(response, "Online players:\n");
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (players[i].is_online) {
@@ -679,7 +749,7 @@ void send_online_players(Player *player) {
         }
     }
     send_message(player->socket, response);
-
+    memset(response, 0, sizeof(response));
     pthread_mutex_unlock(&player_mutex);
 }
 
@@ -694,8 +764,8 @@ bool is_pseudo_taken(const char *pseudo) {
 
 void send_all_players(Player *player) {
     pthread_mutex_lock(&player_mutex);
-
     char response[BUFFER_SIZE];
+
     strcpy(response, "All players:\n");
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (players[i].pseudo[0] != '\0' && strcmp(players[i].pseudo, player->pseudo) != 0) {
@@ -705,7 +775,7 @@ void send_all_players(Player *player) {
 
     }
     send_message(player->socket, response);
-
+    memset(response, 0, sizeof(response));
     pthread_mutex_unlock(&player_mutex);
 }
 
@@ -713,7 +783,7 @@ void send_all_players(Player *player) {
 void save_player_to_file(Player *player) {
     FILE *file = fopen(PLAYER_FILE, "a");
     if (file) {
-        fprintf(file, "%s %s\n", player->pseudo, player->password);
+        fprintf(file, "%s %s %d\n", player->pseudo, player->password, player->private);
 
         // Write friends to the file
         fprintf(file, "friends: ");
@@ -835,6 +905,7 @@ Player *handle_registration(char *pseudo, char *password, int client_socket) {
             strcpy(players[i].password, password);
             players[i].socket = client_socket;
             players[i].is_online = true;
+            players[i].private = false;
 
             players[i].challenged_by[0] = '\0';
             players[i].challenged[0] = '\0';
@@ -860,11 +931,12 @@ Player *handle_registration(char *pseudo, char *password, int client_socket) {
 
 void handle_logout(Player *player) {
     send_message(player->socket, "Logging out...\n");
+    printf("Logging out: %s\n", player->pseudo);
 
-    pthread_mutex_lock(&player_mutex);
     if (player->game_id != -1) {
         remove_game(player->game_id);
     }
+    pthread_mutex_lock(&player_mutex);
 
     if (player->challenged_by[0] != '\0') {
         Player *challenged_by_player = find_player_by_pseudo(player->challenged_by);
@@ -889,11 +961,11 @@ void handle_logout(Player *player) {
     player->is_online = false;
     player->socket = -1;
 
-    pthread_mutex_unlock(&player_mutex);
 
     printf("Player logged out: %s\n", player->pseudo);
 
     close(player->socket);
+    pthread_mutex_unlock(&player_mutex);
     pthread_exit(NULL);
 }
 
@@ -908,12 +980,14 @@ void initialize_game(Player *player1, Player *player2) {
         return;
     }
 
+    pthread_mutex_lock(&player_mutex);
     new_game->observer_count = 0;
     // Assign players to the game
     new_game->player1 = player1;
     new_game->player2 = player2;
     player1->game_id = id;
     player2->game_id = id;
+    pthread_mutex_unlock(&player_mutex);
 
     // Initialize pits for both players
     initialize_board(new_game);
@@ -964,12 +1038,14 @@ void send_game_start_message(int client_socket, int challenged_socket, int turn)
 }
 
 void initialize_board(Game *game) {
+    pthread_mutex_lock(&player_mutex);
     for (int i = 0; i < PITS; i++) {
         game->player1->pits[i] = INITIAL_SEEDS;
         game->player2->pits[i] = INITIAL_SEEDS;
     }
     game->player1->store = 0;
     game->player2->store = 0;
+    pthread_mutex_unlock(&player_mutex);
 }
 
 
@@ -1006,7 +1082,7 @@ void remove_game(int game_id) {
 
 void decline_challenge(Player *player) {
     if (player->challenged_by[0] == '\0') {
-        send_message(player->socket, "You do not have pending challenge!\n");
+        send_message(player->socket, "You do not have a pending challenge!\n");
         return;
     }
 
@@ -1016,18 +1092,19 @@ void decline_challenge(Player *player) {
         send_message(player->socket, "User is not online anymore!\n");
         return;
     }
-    // Set players as in a game
-    send_message(challenger->socket, "Your challenge has been declined.\n");
-    send_message(player->socket, "You declined the challenge.\n");
 
-    // Set players as in a game
+    pthread_mutex_lock(&player_mutex);
     player->challenged_by[0] = '\0';
     challenger->challenged[0] = '\0';
+    pthread_mutex_unlock(&player_mutex);
+
+    send_message(challenger->socket, "Your challenge has been declined.\n");
+    send_message(player->socket, "You declined the challenge.\n");
 }
 
 void accept_challenge(Player *player) {
     if (player->challenged_by[0] == '\0') {
-        send_message(player->socket, "You do not have pending challenge!\n");
+        send_message(player->socket, "You do not have a pending challenge!\n");
         return;
     }
 
@@ -1042,11 +1119,13 @@ void accept_challenge(Player *player) {
         player->observing[0] = '\0';
     }
 
-    send_message(player->socket, "You accepted the challenge!\n");
-    send_message(challenger->socket, "Your challenge has been accepted!\n");
-
+    pthread_mutex_lock(&player_mutex);
     player->challenged_by[0] = '\0';
     challenger->challenged[0] = '\0';
+    pthread_mutex_unlock(&player_mutex);
+
+    send_message(player->socket, "You accepted the challenge!\n");
+    send_message(challenger->socket, "Your challenge has been accepted!\n");
 
     initialize_game(player, challenger);
 }
@@ -1067,6 +1146,7 @@ void notify_move(const char *player_pseudo, int pit_index, Game *game) {
     for (int i = 0; i < game->observer_count; i++) {
         send_message(game->observers[i]->socket, message);
     }
+    memset(message, 0, sizeof(message));
 }
 
 
@@ -1110,31 +1190,68 @@ void send_board(int socket, Player *player1, Player *player2) {
     );
 
     send_message(socket, board);
+    memset(board, 0, sizeof(board));
+}
+
+bool in_friend_list(Player *player, Player *target) {
+    for (int i = 0; i < target->friend_count; i++) {
+        if (strcmp(player->pseudo, target->friends[i]) == 0) {
+            return 1;  // Player is in the friend list, they can observe
+        }
+    }
+
+    return 0;
 }
 
 
-bool can_observe(Player *player, Player *to_observe) {
-    if (!to_observe->private) {
-        return 1;
+bool can_observe(Player *player, int game_id) {
+    Game *game = active_games[game_id];
+
+    if (game->player1->private || game->player2->private) {
+        return in_friend_list(player, game->player1) || in_friend_list(player, game->player2);
     }
-    //todo: after adding possibility to add friends update checking
+
     return 1;
 }
 
+void update_observers(int game_id) {
+    Game *game = active_games[game_id];
+    if (game == NULL) {
+        pthread_mutex_unlock(&player_mutex);
+        return;
+    }
+
+    if (game->observer_count == 0) {
+        pthread_mutex_unlock(&player_mutex);
+        return;
+    }
+
+    for (int i = 0; i < game->observer_count; ++i) {
+        Player *obs = game->observers[i];
+        if (!can_observe(obs, game_id)) {
+            send_message(obs->socket, "One or both players is/are in private mode, only friends can observe\n");
+            remove_observer(obs);
+        }
+    }
+
+}
+
 void add_observer(Player *observer, Player *to_observe) {
+    pthread_mutex_lock(&player_mutex);
     Game *game = active_games[to_observe->game_id];
 
     if (game == NULL) {
         send_message(observer->socket, "Error finding the game...\n");
+        pthread_mutex_unlock(&player_mutex);
         return;
     }
 
     if (game->observer_count >= MAX_PLAYERS) {
         send_message(observer->socket, "Observer limit reached for this game\n");
+        pthread_mutex_unlock(&player_mutex);
         return;
     }
 
-    pthread_mutex_lock(&player_mutex);
     strcpy(observer->observing, to_observe->pseudo);
     game->observers[game->observer_count] = observer;
     game->observer_count++;
@@ -1184,7 +1301,6 @@ void remove_observer(Player *observer) {
 }
 
 void handle_quit_observe(Player *player) {
-    printf("%s\n", player->pseudo);
     if (player->observing[0] == '\0') {
         send_message(player->socket, "You are not currently observing any game\n");
         return;
@@ -1199,29 +1315,166 @@ void handle_observe(Player *player, char *command) {
         // Validate the pseudo
         if (strlen(pseudo) == 0 || strlen(pseudo) > MAX_PSEUDO_LEN) {
             send_message(player->socket, "Error reading challenged pseudo\n");
+            memset(pseudo, 0, sizeof(pseudo));
             return;
         }
     }
     if (strlen(pseudo) == 0) {
         send_message(player->socket, "Error reading challenged pseudo\n");
+        memset(pseudo, 0, sizeof(pseudo));
         return;
     }
 
-    printf("%s \nalskdlad %s\n", command, pseudo);
-
+    pthread_mutex_lock(&player_mutex);
     Player *to_observe = find_player_by_pseudo(pseudo);
+    memset(pseudo, 0, sizeof(pseudo));
 
     if (to_observe->game_id == -1) {
         send_message(player->socket, "Player is not in the game\n");
         return;
     }
 
-    if (!can_observe(player, to_observe)) {
-        send_message(player->socket, "Player is in private mode, only friends can observe\n");
+    if (!can_observe(player, to_observe->game_id)) {
+        send_message(player->socket, "One or both players is/are in private mode, only friends can observe\n");
+        return;
+    }
+    pthread_mutex_unlock(&player_mutex);
+
+    add_observer(player, to_observe);
+
+}
+
+void send_friend_list(Player *player) {
+    if (player->friend_count == 0) {
+        send_message(player->socket, "You did not add any friends yet...\n");
         return;
     }
 
-    add_observer(player, to_observe);
+    // Build the list of friends as a message
+    char message[1024] = "Your friends are:\n";
+
+    for (int i = 0; i < player->friend_count; i++) {
+        // Append each friend's pseudo to the message
+        strcat(message, player->friends[i]);
+        strcat(message, "\n");
+    }
+
+    // Send the list of friends to the player
+    send_message(player->socket, message);
+    memset(message, 0, sizeof(message));
+}
+
+void handle_remove_friend(Player *player, char *command) {
+    char pseudo[MAX_PSEUDO_LEN];
+    if (sscanf(command, "REMOVE_FRIEND %10s", pseudo) == 1) { // Limit pseudo to MAX_PSEUDO_LEN
+        // Validate the pseudo
+        if (strlen(pseudo) == 0 || strlen(pseudo) > MAX_PSEUDO_LEN) {
+            send_message(player->socket, "Error reading pseudo\n");
+            memset(pseudo, 0, sizeof(pseudo));
+            return;
+        }
+    }
+
+    int friend_index = -1;
+    for (int i = 0; i < player->friend_count; i++) {
+        if (strcmp(player->friends[i], pseudo) == 0) {
+            friend_index = i;
+            break;
+        }
+    }
+
+    memset(pseudo, 0, sizeof(pseudo));  // Clear the temporary variable
+    if (friend_index == -1) {
+        send_message(player->socket, "The player is not in your friend list\n");
+        return;
+    }
+
+    for (int i = friend_index; i < player->friend_count - 1; i++) {
+        strcpy(player->friends[i], player->friends[i + 1]);
+    }
+    player->friend_count--;
+    send_message(player->socket, "Friend removed successfully\n");
+}
+
+void handle_add_friend(Player *player, char *command) {
+    char pseudo[MAX_PSEUDO_LEN];
+    if (sscanf(command, "ADD_FRIEND %10s", pseudo) == 1) { // Limit pseudo to MAX_PSEUDO_LEN
+        // Validate the pseudo
+        if (strlen(pseudo) == 0 || strlen(pseudo) > MAX_PSEUDO_LEN) {
+            send_message(player->socket, "Error reading pseudo\n");
+            memset(pseudo, 0, sizeof(pseudo));
+            return;
+        }
+    }
+    Player *friend_player = find_player_by_pseudo(pseudo);
+
+    if (friend_player == NULL) {
+        send_message(player->socket, "Player not found\n");
+        memset(pseudo, 0, sizeof(pseudo));
+        return;
+    }
+
+    if (strcmp(friend_player->pseudo, player->pseudo) == 0) {
+        send_message(player->socket, "You can not add yourself as a friend\n");
+        memset(pseudo, 0, sizeof(pseudo));
+        return;
+    }
+
+    if (friend_player->friend_count >= MAX_FRIENDS) {
+        send_message(player->socket, "Your friend's friend list is full\n");
+        memset(pseudo, 0, sizeof(pseudo));
+        return;
+    }
+
+    for (int i = 0; i < player->friend_count; i++) {
+        if (strcmp(player->friends[i], pseudo) == 0) {
+            send_message(player->socket, "This player is already your friend\n");
+            return;
+        }
+    }
+
+    strcpy(player->friends[player->friend_count], pseudo);
+    player->friend_count++;
+    printf("%d", player->friend_count);
+    memset(pseudo, 0, sizeof(pseudo));
+
+    update_players_file();
+
+    send_message(player->socket, "Friend added successfully\n");
+}
+
+void send_pending_challenge(Player *player) {
+    if (player->challenged_by[0] == '\0') {
+        send_message(player->socket, "You do not have a pending challenge!\n");
+        return;
+    }
+
+    char message[MAX_PSEUDO_LEN + 19];
+    snprintf(message, sizeof(message), "Challenge from %s\n", player->challenged_by);
+    send_message(player->socket, message);
+
+    memset(message, 0, sizeof(message));
+}
+
+void handle_revoke_challenge(Player *player) {
+    if (player->challenged[0] == '\0') {
+        send_message(player->socket, "You did not challenge anyone yet\n");
+        return;
+    }
+
+    Player *challenged = find_player_by_pseudo(player->challenged);
+    if (challenged == NULL) {
+        send_message(player->socket, "Error finding challenged player\n");
+        return;
+    }
+
+    pthread_mutex_lock(&player_mutex);
+    challenged->challenged_by[0] = '\0';
+    player->challenged[0] = '\0';
+    pthread_mutex_unlock(&player_mutex);
+
+    send_message(player->socket, "You have revoked the challenge\n");
+    send_message(challenged->socket, "The challenge was revoked\n");
 }
 
 void handle_challenge(Player *player, char *command) {
@@ -1235,7 +1488,7 @@ void handle_challenge(Player *player, char *command) {
     }
 
     if (player->challenged_by[0] != '\0') {
-        send_message(player->socket, "Accept or decline pending challenge\n");
+        send_message(player->socket, "Accept or decline the pending challenge\n");
         return;
     }
     if (player->game_id != -1) {
@@ -1262,8 +1515,10 @@ void handle_challenge(Player *player, char *command) {
         return;
     }
 
+    pthread_mutex_lock(&player_mutex);
     strcpy(challenged->challenged_by, player->pseudo);
     strcpy(player->challenged, challenged->pseudo);
+    pthread_mutex_unlock(&player_mutex);
 
     send_challenge(player, challenged);
     notify_challenge_sent(player->socket);
@@ -1306,6 +1561,7 @@ void send_challenge(Player *player, Player *challenged) {
     snprintf(challenge_notification, sizeof(challenge_notification),
              "%s is challenging you! Do you accept?\n", player->pseudo);
     send_message(challenged->socket, challenge_notification);
+    memset(challenge_notification, 0, sizeof(challenge_notification));
 }
 
 void end_game(Player *player1, Player *player2, int result, Game *game) {
@@ -1324,11 +1580,10 @@ void end_game(Player *player1, Player *player2, int result, Game *game) {
     // Send the result to both players
     send_message(player1->socket, winner);
     send_message(player2->socket, winner);
+    memset(winner, 0, sizeof(winner));
 
     // Clean up game state
     remove_game(player1->game_id);
-
-    // Exit the game loop or close sockets if necessary
 }
 
 int capture_seeds(Player *current_player, Player *opponent, int last_pit) {
@@ -1336,9 +1591,9 @@ int capture_seeds(Player *current_player, Player *opponent, int last_pit) {
     int captured_seeds = 0;
 
     // Notify both players that we are checking for captures
-    snprintf(message, sizeof(message), "Checking for captures at pit %d...\n", last_pit);
-    send_message(current_player->socket, message);
-    send_message(opponent->socket, message);
+//    snprintf(message, sizeof(message), "Checking for captures at pit %d...\n", last_pit);
+//    send_message(current_player->socket, message);
+//    send_message(opponent->socket, message);
 
     while (last_pit >= 0 && (opponent->pits[last_pit] == 2 || opponent->pits[last_pit] == 3)) {
         // Capture the seeds from the opponent's pit
@@ -1352,14 +1607,16 @@ int capture_seeds(Player *current_player, Player *opponent, int last_pit) {
     current_player->store += captured_seeds;
 
     // Notify both players about the capture result
-    snprintf(message, sizeof(message), "%s captured %d seeds. Their store now has %d seeds.\n",
-             current_player->pseudo, captured_seeds, current_player->store);
-    send_message(current_player->socket, message);
+    if (captured_seeds > 0) {
+        snprintf(message, sizeof(message), "%s captured %d seeds. Their store now has %d seeds.\n",
+                 current_player->pseudo, captured_seeds, current_player->store);
+        send_message(current_player->socket, message);
+        snprintf(message, sizeof(message), "%s captured seeds from your side. Their store now has %d seeds.\n",
+                 current_player->pseudo, current_player->store);
+        send_message(opponent->socket, message);
+    }
 
-    snprintf(message, sizeof(message), "%s captured seeds from your side. Their store now has %d seeds.\n",
-             current_player->pseudo, current_player->store);
-    send_message(opponent->socket, message);
-
+    memset(message, 0, sizeof(message));
     return captured_seeds;
 }
 
@@ -1426,22 +1683,23 @@ void make_move(Player *player, char *command) {
 }
 
 
-void tie(Player *current_player, Player *opponent, Game game) {
-    char response;
-    send_message(current_player->socket, "Do you want to propose a tie? (y/n): ");
-    recv(current_player->socket, &response, 1, 0); // Get response from player
-
-    if (response == 'y' || response == 'Y') {
-        send_message(opponent->socket, "Your opponent proposed a tie. Do you accept? (y/n): ");
-        recv(opponent->socket, &response, 1, 0); // Get response from opponent
-
-        if (response == 'y' || response == 'Y') {
-            end_game(current_player, opponent, 0, &game); // Tie the game
-        } else {
-            send_message(current_player->socket, "The tie proposal was rejected. The game continues.\n");
-        }
-    }
-}
+//void tie(Player *current_player, Player *opponent, Game game) {
+//    char response;
+//    send_message(current_player->socket, "Do you want to propose a tie? (y/n): ");
+//    recv(current_player->socket, &response, 1, 0); // Get response from player
+//
+//    if (response == 'y' || response == 'Y') {
+//        send_message(opponent->socket, "Your opponent proposed a tie. Do you accept? (y/n): ");
+//        recv(opponent->socket, &response, 1, 0); // Get response from opponent
+//
+//        if (response == 'y' || response == 'Y') {
+//            end_game(current_player, opponent, 0, &game); // Tie the game
+//        } else {
+//            send_message(current_player->socket, "The tie proposal was rejected. The game continues.\n");
+//        }
+//    }
+//    memset(*response, 0, sizeof(response));
+//}
 
 void add_move(Player *player, int pit_index, int seeds_before_move) {
     Move *new_move = (Move *) malloc(sizeof(Move));

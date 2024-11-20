@@ -29,14 +29,19 @@ const char *SHOW_ONLINE = "SHOW_ONLINE\n";
 const char *SHOW_PLAYERS = "SHOW_PLAYERS\n";
 const char *SHOW_GAMES = "SHOW_GAMES\n";
 const char *CHALLENGE = "CHALLENGE";
+const char *REVOKE = "REVOKE_CHALLENGE\n";
+const char *PENDING = "PENDING\n";
 const char *ACCEPT = "ACCEPT\n";
 const char *DECLINE = "DECLINE\n";
 const char *OBSERVE = "OBSERVE";
 const char *QUIT_OBSERVE = "QUIT_OBSERVE\n";
 const char *VIEW_FRIEND_LIST = "VIEW_FRIEND_LIST\n";
 const char *ADD_FRIEND = "ADD_FRIEND";
+const char *REMOVE_FRIEND = "REMOVE_FRIEND";
 const char *FRIENDS_ONLY = "FRIENDS_ONLY\n";
 const char *PUBLIC = "PUBLIC\n";
+const char *PRIVATE = "PRIVATE\n";
+const char *ACCESS = "ACCESS\n";
 const char *VIEW_BIO = "VIEW_BIO\n";
 const char *VIEW_PLAYER_BIO = "VIEW_PLAYER_BIO";
 const char *UPDATE_BIO = "UPDATE_BIO";
@@ -100,11 +105,17 @@ void handle_friend_list(int server_socket);
 
 void handle_add_friend(int server_socket, const char *command);
 
+void handle_remove_friend(int server_socket, const char *command);
+
+void handle_access(int server_socket);
+
 void handle_private(int server_socket);
 
 void handle_public(int server_socket);
 
 void handle_accept(int server_socket);
+
+void handle_revoke(int server_socket);
 
 void handle_decline(int server_socket);
 
@@ -236,6 +247,7 @@ void *listen_to_server(void *arg) {
         } else if (strcmp(buffer, login_success) == 0 || strcmp(reg_success, buffer) == 0) {
             logged_in = 1;  // Set login status to true
         } else if (strcmp(buffer, logged_out) == 0) {
+            logged_in = 0;
             exit(0);
         } else {
             printf("%s", buffer); // Display any other server messages
@@ -262,6 +274,10 @@ void *handle_user_commands(int server_socket) {
     while (logged_in) {
         read_line("", buffer, BUFFER_SIZE);
 
+        if (!logged_in) {
+            exit(0);
+        }
+
         if (strcmp(buffer, "/help") == 0) {
             handle_help();
         } else if (strcmp(buffer, "/exit") == 0) {
@@ -280,7 +296,7 @@ void *handle_user_commands(int server_socket) {
             handle_bio(server_socket);
         } else if (strncmp(buffer, "/pbio ", 5) == 0) {
             handle_view_bio(server_socket, buffer);
-        } else if (strncmp(buffer, "/update", 7) == 0) {
+        } else if (strcmp(buffer, "/update") == 0) {
             handle_update_bio(server_socket, buffer);
         } else if (strncmp(buffer, "/gl ", 4) == 0) {
             handle_global_message(server_socket, buffer);
@@ -288,7 +304,7 @@ void *handle_user_commands(int server_socket) {
             handle_direct_message(server_socket, buffer);
         } else if (strncmp(buffer, "/chat ", 6) == 0) {
             handle_game_message(server_socket, buffer);
-        } else if (strncmp(buffer, "/m ", 2) == 0) {
+        } else if (strncmp(buffer, "/m ", 3) == 0) {
             handle_make_move(server_socket, buffer);
         } else if (strcmp(buffer, "/end") == 0) {
             handle_end_game(server_socket, buffer);
@@ -298,6 +314,10 @@ void *handle_user_commands(int server_socket) {
             handle_friend_list(server_socket);
         } else if (strncmp(buffer, "/addfr ", 7) == 0) {
             handle_add_friend(server_socket, buffer);
+        } else if (strncmp(buffer, "/rmfr ", 6) == 0) {
+            handle_remove_friend(server_socket, buffer);
+        } else if (strcmp(buffer, "/access") == 0) {
+            handle_access(server_socket);
         } else if (strcmp(buffer, "/private") == 0) {
             handle_private(server_socket);
         } else if (strcmp(buffer, "/public") == 0) {
@@ -308,6 +328,10 @@ void *handle_user_commands(int server_socket) {
             handle_accept(server_socket);
         } else if (strncmp(buffer, "/challenge", strlen(CHALLENGE) + 1) == 0) {
             handle_challenge(server_socket, buffer);
+        } else if (strcmp(buffer, "/revoke") == 0) {
+            handle_revoke(server_socket);
+        } else if (strcmp(buffer, "/pending") == 0) {
+            send_message(server_socket, PENDING);
         } else {
             printf("Unknown command: %s\n", buffer);
         }
@@ -371,20 +395,25 @@ void handle_help() {
             "/players - Show all players\n"
             "/games - Show available games\n"
             "/challenge - Challenge player by pseudo\n"
+            "/pending - See pending challenge\n"
+            "/revoke - revoke(cancel) challenge\n"
             "/accept - Accept a challenge\n"
             "/decline - Decline a challenge\n"
             "/obs <pseudo> - Observe a game the player <pseudo> is in\n"
             "/qobs - Quit observing the game\n"
             "/fr - View your friend list\n"
-            "/addfr <pseudo> - Add a friend \n"
-            "/private - Allow only friends to observe the games I am in \n"
-            "/public - Allow all players to observe the games I am in \n"
+            "/addfr <pseudo> - Add a friend\n"
+            "\t\t(Remember: friend here means sbd who can see your games, you will not be added to their friend list) \n"
+            "/rmfr <pseudo> - Remove a friend\n"
+            "/access - See your privacy level \n"
+            "/private - Allow only friends to observe the games you are in \n"
+            "/public - Allow all players to observe the games you are in \n"
             "/bio - View your bio\n"
             "/pbio <player> - View another player's bio\n"
             "/update - Update your bio\n"
-            "/gl \"<message>\" - Send a global message\n"
-            "/gmsg \"<message>\" - Send a message to a game players/observers\n"
-            "/msg <pseudo> \"<message>\" - Send a direct message to a player\n"
+            "/gl <message> - Send a global message\n"
+            "/chat <message> - Send a message to a game players/observers\n"
+            "/msg <pseudo> <message> - Send a direct message to a player\n"
             "/m - Make a move in the current game\n"
             "/end - End the current game\n"
             "/leave - Leave the current game\n"
@@ -587,8 +616,7 @@ void handle_leave_game(int server_socket, const char *command) {
 }
 
 void handle_friend_list(int server_socket) {
-    const char *command = "FRIEND_LIST\n";
-    send(server_socket, command, strlen(command), 0);
+    send_message(server_socket, VIEW_FRIEND_LIST);
 }
 
 void handle_add_friend(int server_socket, const char *command) {
@@ -603,17 +631,34 @@ void handle_add_friend(int server_socket, const char *command) {
 
     char buffer[BUFFER_SIZE];
     snprintf(buffer, sizeof(buffer), "ADD_FRIEND %s\n", pseudo);
-    send(server_socket, buffer, strlen(buffer), 0);
+    send_message(server_socket, buffer);
+}
+
+void handle_remove_friend(int server_socket, const char *command) {
+    // Example command format: /rmfr <pseudo>
+    char pseudo[MAX_PSEUDO_LEN + 1];
+    sscanf(command + 6, "%s", pseudo);
+
+    if (strlen(pseudo) == 0 || strlen(pseudo) > MAX_PSEUDO_LEN) {
+        printf("Invalid pseudo for friend addition. Ensure it is between 1 and %d characters.\n", MAX_PSEUDO_LEN);
+        return;
+    }
+
+    char buffer[BUFFER_SIZE];
+    snprintf(buffer, sizeof(buffer), "REMOVE_FRIEND %s\n", pseudo);
+    send_message(server_socket, buffer);
+}
+
+void handle_access(int server_socket) {
+    send_message(server_socket, ACCESS);
 }
 
 void handle_private(int server_socket) {
-    const char *command = "PRIVATE\n";
-    send(server_socket, command, strlen(command), 0);
+    send_message(server_socket, PRIVATE);
 }
 
 void handle_public(int server_socket) {
-    const char *command = "PUBLIC\n";
-    send(server_socket, command, strlen(command), 0);
+    send_message(server_socket, PUBLIC);
 }
 
 void handle_decline(int server_socket) {
@@ -624,6 +669,9 @@ void handle_accept(int server_socket) {
     send_message(server_socket, ACCEPT);
 }
 
+void handle_revoke(int server_socket) {
+    send_message(server_socket, REVOKE);
+}
 
 void handle_challenge(int server_socket, const char *command) {
     char pseudo[MAX_PSEUDO_LEN + 1] = {0}; // Initialize to ensure it's null-terminated
