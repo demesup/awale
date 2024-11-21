@@ -130,6 +130,12 @@ void update_access(Player *player, int private);
 
 void send_access(Player *player);
 
+void send_global_message(Player *player, char *buffer);
+
+void send_game_message(Player *player, char *buffer);
+
+void send_direct_message(Player *player, char *buffer);
+
 void update_observers(int game_id);
 
 bool can_observe(Player *player, int game_id);
@@ -417,9 +423,16 @@ void menu(Player *player) {
             update_access(player, 0);
         } else if (strcmp(command, ACCESS) == 0) {
             send_access(player);
+        } else if (strcmp(command, GLOBAL_MESSAGE) == 0) {
+            send_global_message(player, buffer);
+        } else if (strcmp(command, GAME_MESSAGE) == 0) {
+            send_game_message(player, buffer);
+        } else if (strcmp(command, DIRECT_MESSAGE) == 0) {
+            send_direct_message(player, buffer);
         } else {
             printf("Unknown command: %s\n", command);
         }
+        memset(buffer, 0, sizeof(buffer));
     }
 }
 
@@ -629,6 +642,126 @@ void send_access(Player *player) {
     }
 }
 
+void send_game_message(Player *player, char *buffer) {
+    char message[BUFFER_SIZE];
+
+    // Clear the message buffer
+    memset(message, 0, sizeof(message));
+
+    // Format the message
+    snprintf(message, sizeof(message), "GAME %s: %s\n", player->pseudo, buffer + strlen("GAME_MESSAGE "));
+
+    Game *game = NULL;  // Initialize game to NULL
+
+    if (player->game_id != -1) {
+        game = active_games[player->game_id];  // Find game by game_id
+    } else if (player->observing[0] != '\0') {
+        Player *playing = find_player_by_pseudo(player->observing);  // Find player being observed
+        if (playing != NULL) {
+            game = active_games[playing->game_id];  // Find game of the observed player
+        }
+    }
+
+// Check if the game is found
+    if (game == NULL) {
+        send_message(player->socket, "Game not found\n");  // Send message if game is not found
+        memset(message, 0, sizeof(message));  // Clear message buffer
+        return;  // Exit the function
+    }
+
+
+    int skip_check = 0;
+    if (strcmp(player->pseudo, game->player1->pseudo) == 0) {
+        skip_check = 1;
+    } else {
+        send_message(game->player1->socket, message);
+    }
+
+    if (skip_check) {
+        send_message(game->player2->socket, message);
+    } else if (strcmp(player->pseudo, game->player2->pseudo) == 0) {
+        skip_check = 1;
+    }
+
+    for (int i = 0; i < game->observer_count; ++i) {
+        if (skip_check) {
+            send_message(game->observers[i]->socket, message);
+        } else if (strcmp(player->pseudo, game->observers[i]->pseudo) == 0) {
+            skip_check = 1;
+        }
+    }
+
+    memset(message, 0, sizeof(message));
+
+}
+
+
+void send_global_message(Player *player, char *buffer) {
+    char message[BUFFER_SIZE];
+
+    // Clear the message buffer
+    memset(message, 0, sizeof(message));
+
+    // Format the messagef
+    snprintf(message, sizeof(message), "GL %s: %s\n", player->pseudo, buffer + strlen("GLOBAL_MESSAGE "));
+
+    // Iterate over all players
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (players[i].is_online) {
+            // Skip sending the message to the sender
+            if (strcmp(players[i].pseudo, player->pseudo) == 0) {
+                continue;
+            }
+            // Send the message to other online players
+            send_message(players[i].socket, message);
+        }
+    }
+
+    // Ensure the buffer is cleared after use
+    memset(message, 0, sizeof(message));
+}
+
+
+void send_direct_message(Player *player, char *buffer) {
+    char message[BUFFER_SIZE];
+    char pseudo[BUFFER_SIZE];
+
+    memset(message, 0, sizeof(message));
+    memset(pseudo, 0, sizeof(pseudo));
+
+    // Extract pseudo and message from the buffer
+    if (sscanf(buffer, "DIRECT_MESSAGE %s %[^\n]", pseudo, message) != 2) {
+        printf("Invalid command format.\n");
+        memset(pseudo, 0, sizeof(pseudo));
+        memset(message, 0, sizeof(message));
+        return;
+    }
+
+
+    Player *target = find_player_by_pseudo(pseudo);
+    if (target == NULL) {
+        send_message(player->socket, "Player not found\n");
+        memset(pseudo, 0, sizeof(pseudo));
+        memset(message, 0, sizeof(message));
+        return;
+    }
+    if (!target->is_online) {
+        send_message(player->socket, "Player is not online\n");
+        memset(pseudo, 0, sizeof(pseudo));
+        memset(message, 0, sizeof(message));
+        return;
+    }
+
+
+    char formatted_message[BUFFER_SIZE];
+    snprintf(formatted_message, sizeof(formatted_message), "From %s: %s\n", player->pseudo, message);
+
+    send_message(target->socket, formatted_message);
+
+    memset(pseudo, 0, sizeof(pseudo));
+    memset(message, 0, sizeof(message));
+}
+
 void update_access(Player *player, int private) {
     player->private = private;
     if (player->game_id != -1 && private) {
@@ -662,6 +795,7 @@ void handle_update_bio(Player *player, char *command) {
         memset(bio, 0, sizeof(bio));
         return;
     }
+
     char processed_bio[MAX_BIO_LINES * MAX_BIO_LINE_LENGTH];
     int j = 0;
     for (int i = 0; bio[i] != '\0'; i++) {
@@ -699,7 +833,11 @@ void handle_see_player_bio(Player *player_target, char *command) {
             return;
         }
     }
+
     Player *player = find_player_by_pseudo(pseudo);
+    if (player == NULL) {
+        send_message(player_target->socket, "Player not found\n");
+    }
 
     char bio_output[MAX_BIO_LINES * MAX_BIO_LINE_LENGTH] = "Bio:\n";
 

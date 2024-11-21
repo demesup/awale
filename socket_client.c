@@ -140,17 +140,23 @@ int contains_space(const char *str) {
 
 void read_line(char *prompt, char *buffer, size_t size) {
     printf("%s\n", prompt);
+
     memset(buffer, 0, size);
 
     ssize_t read = 0;
     while (1) {
+        // Read line from stdin (dynamic buffer adjustment)
         read = getline(&buffer, &size, stdin);
         if (read != -1) {
-            buffer[strlen(buffer) - 1] = '\0';
-            break;
+            // Check if the last character is a newline and replace it with null terminator
+            if (buffer[read - 1] == '\n') {
+                buffer[read - 1] = '\0';  // Remove the newline character
+            }
+            break;  // Break the loop when a valid line is read
         }
     }
 }
+
 
 int send_message(int sockfd, const char *message) {
     send(sockfd, message, strlen(message), 0);
@@ -460,6 +466,9 @@ void handle_obs(int server_socket, const char *command) {
     } else {
         printf("Failed to extract pseudo. Ensure the command is in the correct format: /challenge <pseudo>\n");
     }
+
+    memset(buffer, 0, sizeof(buffer));
+    memset(pseudo, 0, sizeof(pseudo));
 }
 
 void handle_quit_obs(int server_socket) {
@@ -490,10 +499,13 @@ void handle_view_bio(int server_socket, const char *command) {
         strcat(buffer, "\n");
 
         send_message(server_socket, buffer);
+
     } else {
         printf("Failed to extract pseudo. Ensure the command is in the correct format: /challenge <pseudo>\n");
     }
 
+    memset(buffer, 0, sizeof(buffer));
+    memset(pseudo, 0, sizeof(pseudo));
 }
 
 //todo: do not allow \n and \o
@@ -561,21 +573,58 @@ void handle_update_bio(int server_socket, const char *command) {
     strcat(buffer, "\n");
 
     send_message(server_socket, buffer);
+    memset(buffer, 0, sizeof(buffer));
 }
 
+
+// command goes like /gl <message>
 void handle_global_message(int server_socket, const char *command) {
-    printf("Sending GLOBAL MESSAGE request: %s\n", command);
-    send(server_socket, command, strlen(command), 0);
+    const char *prefix = "/gl ";
+    if (strncmp(command, prefix, strlen(prefix)) == 0) {
+        const char *message = command + strlen(prefix);
+
+        // Prepare the buffer to send
+        char buffer[1024];  // Adjust size as needed
+        snprintf(buffer, sizeof(buffer), "GLOBAL_MESSAGE %s\n", message);
+
+        // Send the message
+        send_message(server_socket, buffer);
+        memset(buffer, 0, sizeof(buffer));
+    } else {
+        printf("Invalid command\n");
+    }
 }
 
 void handle_direct_message(int server_socket, const char *command) {
-    printf("Sending DIRECT MESSAGE request: %s\n", command);
-    send(server_socket, command, strlen(command), 0);
+    if (strncmp(command, "/msg ", 5) == 0) {
+        // Skip over the /msg part
+        const char *message = command + 5;
+
+        // Prepare the buffer to send
+        char buffer[1024];  // Adjust size as needed
+        snprintf(buffer, sizeof(buffer), "DIRECT_MESSAGE %s\n", message);
+
+        // Send the message
+        send_message(server_socket, buffer);
+    } else {
+        printf("Invalid command\n");
+    }
 }
 
 void handle_game_message(int server_socket, const char *command) {
-    printf("Sending GAME MESSAGE request: %s\n", command);
-    send(server_socket, command, strlen(command), 0);
+    if (strncmp(command, "/chat ", 6) == 0) {
+        const char *message = command + 6;
+
+        // Prepare the buffer to send
+        char buffer[1024];  // Adjust size as needed
+        snprintf(buffer, sizeof(buffer), "GAME_MESSAGE %s\0", message);
+
+        // Send the message
+        send_message(server_socket, buffer);
+        memset(buffer, 0, sizeof(buffer));
+    } else {
+        printf("Invalid command\n");
+    }
 }
 
 // command: /m 3
@@ -603,6 +652,8 @@ void handle_make_move(int server_socket, const char *command) {
 
     // Send the message to the server
     send_message(server_socket, message);
+    memset(message, 0, sizeof(message));
+
 }
 
 void handle_end_game(int server_socket, const char *command) {
@@ -632,6 +683,9 @@ void handle_add_friend(int server_socket, const char *command) {
     char buffer[BUFFER_SIZE];
     snprintf(buffer, sizeof(buffer), "ADD_FRIEND %s\n", pseudo);
     send_message(server_socket, buffer);
+
+    memset(buffer, 0, sizeof(buffer));
+    memset(pseudo, 0, sizeof(pseudo));
 }
 
 void handle_remove_friend(int server_socket, const char *command) {
@@ -647,6 +701,9 @@ void handle_remove_friend(int server_socket, const char *command) {
     char buffer[BUFFER_SIZE];
     snprintf(buffer, sizeof(buffer), "REMOVE_FRIEND %s\n", pseudo);
     send_message(server_socket, buffer);
+
+    memset(buffer, 0, sizeof(buffer));
+    memset(pseudo, 0, sizeof(pseudo));
 }
 
 void handle_access(int server_socket) {
@@ -696,4 +753,7 @@ void handle_challenge(int server_socket, const char *command) {
     } else {
         printf("Failed to extract pseudo. Ensure the command is in the correct format: /challenge <pseudo>\n");
     }
+
+    memset(pseudo, 0, sizeof(pseudo));
+    memset(buffer, 0, sizeof(buffer));
 }
