@@ -12,6 +12,8 @@
 
 #define LOGOUT "LOGOUT"
 #define SHOW_ONLINE "SHOW_ONLINE"
+#define TOP_ONLINE "TOP_ONLINE"
+#define TOP "TOP"
 #define SHOW_PLAYERS "SHOW_PLAYERS"
 #define SHOW_GAMES "SHOW_GAMES"
 #define CHALLENGE "CHALLENGE"
@@ -35,8 +37,8 @@
 #define GAME_MESSAGE "GAME_MESSAGE"
 #define DIRECT_MESSAGE "DIRECT_MESSAGE"
 #define MAKE_MOVE "MAKE_MOVE"
-#define END_GAME "END_GAME"
 #define LEAVE_GAME "LEAVE_GAME"
+#define SAVE "SAVE"
 
 
 #define MAX_ONLINE_PLAYERS 100
@@ -45,6 +47,7 @@
 #define MAX_GAMES 50
 #define BUFFER_SIZE 1024
 #define PLAYER_FILE "players.txt"
+#define GAMES_FILE "games.txt"
 #define PITS 6  // Number of pits per player
 #define INITIAL_SEEDS 4  // Initial seeds in each pit
 
@@ -78,6 +81,8 @@ typedef struct {
     int pits[PITS];
     int store;
 
+    int win_count;
+
     Move *move_history;
     char observing[MAX_PSEUDO_LEN];
     int game_id;
@@ -91,6 +96,7 @@ typedef struct {
     char current_turn[MAX_PSEUDO_LEN];
     Player *observers[MAX_PLAYERS];
     int observer_count;
+    bool save_on_exit;
 } Game;
 
 typedef struct {
@@ -152,6 +158,8 @@ void save_player_to_file(Player *player);
 
 void load_players_from_file();
 
+void load_game_stats();
+
 void update_players_file();
 
 bool is_pseudo_taken(const char *pseudo);
@@ -159,6 +167,10 @@ bool is_pseudo_taken(const char *pseudo);
 void send_active_games(Player *player);
 
 void send_online_players(Player *player);
+
+void send_top_online_players(Player *player);
+
+void send_top_players(Player *player);
 
 void send_all_players(Player *player);
 
@@ -171,6 +183,8 @@ void handle_add_friend(Player *player, char *command);
 void handle_remove_friend(Player *player, char *command);
 
 /** GAME */
+void handle_save_game(Player *player);
+
 void initialize_board(Game *game);
 
 void initialize_game(Player *player1, Player *player2);
@@ -188,6 +202,8 @@ int is_savior(Player player);
 void add_move(Player *player, int pit_index, int seeds_before_move);
 
 int distribute_seeds(Player *current_player, Player *opponent, int pit_index);
+
+void handle_leave(Player *player);
 
 void end_game(Player *player1, Player *player2, int result, Game *game);
 
@@ -264,6 +280,7 @@ int main(int argc, char **argv) {
 
 
     load_players_from_file();
+    load_game_stats();
 
     /* Initialize parameters */
     bzero((char *) &serv_addr, sizeof(serv_addr));
@@ -385,6 +402,12 @@ void menu(Player *player) {
             send_all_players(player);
         } else if (strcmp(command, SHOW_ONLINE) == 0) {
             send_online_players(player);
+        } else if (strcmp(command, TOP_ONLINE) == 0) {
+            send_top_online_players(player);
+        } else if (strcmp(command, TOP) == 0) {
+            send_top_players(player);
+        } else if (strcmp(command, LEAVE_GAME) == 0) {
+            handle_leave(player);
         } else if (strcmp(command, SHOW_GAMES) == 0) {
             send_active_games(player);
         } else if (strcmp(command, VIEW_BIO) == 0) {
@@ -429,6 +452,8 @@ void menu(Player *player) {
             send_game_message(player, buffer);
         } else if (strcmp(command, DIRECT_MESSAGE) == 0) {
             send_direct_message(player, buffer);
+        } else if (strcmp(command, SAVE) == 0) {
+            handle_save_game(player);
         } else {
             printf("Unknown command: %s\n", command);
         }
@@ -871,6 +896,96 @@ void send_active_games(Player *player) {
 
 }
 
+void send_top_online_players(Player *player) {
+    pthread_mutex_lock(&player_mutex);
+    char response[BUFFER_SIZE];
+    char player_info[BUFFER_SIZE];
+
+    strcpy(response, "Top 10 Online Players (by Win Count):\n");
+
+    // Create an array of player pointers to sort
+    Player *online_players[MAX_PLAYERS];
+    int online_count = 0;
+
+    // Collect all online players
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (players[i].is_online) {
+            online_players[online_count++] = &players[i];
+        }
+    }
+
+    // Sort online players based on win count (descending order)
+    for (int i = 0; i < online_count - 1; i++) {
+        for (int j = i + 1; j < online_count; j++) {
+            if (online_players[i]->win_count < online_players[j]->win_count) {
+                // Swap pointers if the player[i] has fewer wins than player[j]
+                Player *temp = online_players[i];
+                online_players[i] = online_players[j];
+                online_players[j] = temp;
+            }
+        }
+    }
+
+    // Prepare the response with top 10 players (or fewer if less than 10 online)
+    for (int i = 0; i < online_count && i < 10; i++) {
+        snprintf(player_info, sizeof(player_info), "%s - Wins: %d\n", online_players[i]->pseudo,
+                 online_players[i]->win_count);
+        strcat(response, player_info);
+    }
+
+    // Send the response to the player
+    send_message(player->socket, response);
+
+    // Clear the response buffer for safety
+    memset(response, 0, sizeof(response));
+    pthread_mutex_unlock(&player_mutex);
+}
+
+void send_top_players(Player *player) {
+    pthread_mutex_lock(&player_mutex);
+    char response[BUFFER_SIZE];
+    char player_info[BUFFER_SIZE];
+
+    strcpy(response, "Top 10 Online Players (by Win Count):\n");
+
+    // Create an array of player pointers to sort
+    Player *online_players[MAX_PLAYERS];
+    int online_count = 0;
+
+    // Collect all online players and skip invalid ones
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (players[i].pseudo[0] != '\0' && players[i].win_count >= 0) {  // Ensure valid player data
+            online_players[online_count++] = &players[i];
+        }
+    }
+
+    // Sort online players based on win count (descending order)
+    for (int i = 0; i < online_count - 1; i++) {
+        for (int j = i + 1; j < online_count; j++) {
+            if (online_players[i]->win_count < online_players[j]->win_count) {
+                // Swap pointers if the player[i] has fewer wins than player[j]
+                Player *temp = online_players[i];
+                online_players[i] = online_players[j];
+                online_players[j] = temp;
+            }
+        }
+    }
+
+    // Prepare the response with top 10 players (or fewer if less than 10 online)
+    for (int i = 0; i < online_count && i < 10; i++) {
+        snprintf(player_info, sizeof(player_info), "%s - Wins: %d\n", online_players[i]->pseudo,
+                 online_players[i]->win_count);
+        strcat(response, player_info);
+    }
+
+    // Send the response to the player
+    send_message(player->socket, response);
+
+    // Clear the response buffer for safety
+    memset(response, 0, sizeof(response));
+    pthread_mutex_unlock(&player_mutex);
+}
+
 // Send list of online players
 void send_online_players(Player *player) {
     pthread_mutex_lock(&player_mutex);
@@ -1123,6 +1238,7 @@ void initialize_game(Player *player1, Player *player2) {
     // Assign players to the game
     new_game->player1 = player1;
     new_game->player2 = player2;
+    new_game->save_on_exit = false;
     player1->game_id = id;
     player2->game_id = id;
     pthread_mutex_unlock(&player_mutex);
@@ -1702,25 +1818,148 @@ void send_challenge(Player *player, Player *challenged) {
     memset(challenge_notification, 0, sizeof(challenge_notification));
 }
 
+
+typedef struct {
+    char name[MAX_PSEUDO_LEN];
+    int win_count;
+} PlayerStats;
+
+void load_game_stats() {
+    FILE *file = fopen(GAMES_FILE, "r");
+    if (!file) {
+        file = fopen(GAMES_FILE, "a");
+        if (file) {
+            printf("Game file created.\n");
+            fclose(file);
+        } else {
+            perror("Failed to create game file");
+        }
+        return;
+    }
+
+    pthread_mutex_lock(&player_mutex);
+    PlayerStats player_stats[MAX_PLAYERS];  // Array to store player stats
+    int player_count = 0;
+
+    char line[256];
+    while (fgets(line, sizeof(line), file)) {
+        // Look for the line containing "Winner: "
+        if (strncmp(line, "Winner:", 7) == 0) {
+            // Extract the winner's name
+            char winner[MAX_PSEUDO_LEN];
+            sscanf(line + 8, "%s", winner);  // Get the player's name after "Winner: "
+
+            // Check if the winner is already in the stats array
+            int found = 0;
+            for (int i = 0; i < player_count; i++) {
+                if (strcmp(player_stats[i].name, winner) == 0) {
+                    player_stats[i].win_count++;  // Increment win count for this player
+                    found = 1;
+                    break;
+                }
+            }
+
+            // If the winner isn't in the array, add them
+            if (!found) {
+                strcpy(player_stats[player_count].name, winner);
+                player_stats[player_count].win_count = 1;
+                player_count++;
+            }
+        }
+    }
+
+    // Close the file after processing
+    fclose(file);
+
+    pthread_mutex_unlock(&player_mutex);
+
+    for (int i = 0; i < player_count; i++) {
+        find_player_by_pseudo(player_stats[i].name)->win_count = player_stats[i].win_count;
+    }
+}
+
+void save_game(Game *game, char *winner) {
+    pthread_mutex_lock(&player_mutex);
+
+    FILE *file = fopen(GAMES_FILE, "a");
+    if (!file) {
+        printf("Error creating/opening games file\n");
+        return;
+    }
+
+    fprintf(file, "Game Start\n");
+    fprintf(file, "Player1: %s\n", game->player1->pseudo);
+    fprintf(file, "Player2: %s\n", game->player2->pseudo);
+
+    fprintf(file, "Moves:\n");
+    Move *move = game->player1->move_history;
+    while (move) {
+        fprintf(file, "%s: Pit: %d, Seeds: %d\n", game->player1->pseudo, move->pit_index, move->seeds_before_move);
+        move = move->next;
+    }
+
+    move = game->player2->move_history;
+    while (move) {
+        fprintf(file, "%s: Pit: %d, Seeds: %d\n", game->player2->pseudo, move->pit_index, move->seeds_before_move);
+        move = move->next;
+    }
+
+    fprintf(file, "Winner: %s\n", winner);
+    fprintf(file, "Game End\n\n");
+
+    fclose(file);
+    pthread_mutex_unlock(&player_mutex);
+}
+
+void handle_leave(Player *player) {
+    if (player->game_id == -1) {
+        send_message(player->socket, "You are not in the game\n");
+        return;
+    }
+
+    if (active_games[player->game_id] == NULL) {
+        send_message(player->socket, "Game not found\n");
+        return;
+    }
+
+    if (strcmp(active_games[player->game_id]->player1->pseudo, player->pseudo) == 0) {
+        end_game(player, active_games[player->game_id]->player2, -1, active_games[player->game_id]);
+    } else {
+        end_game(player, active_games[player->game_id]->player1, -1, active_games[player->game_id]);
+    }
+}
+
 void end_game(Player *player1, Player *player2, int result, Game *game) {
     char winner[MAX_PSEUDO_LEN];
+    char winner_msg[MAX_PSEUDO_LEN + 8];
     if (result == 0) {
         // Tie condition
-        snprintf(winner, sizeof(winner), "It's a tie!\n");
+        strcpy(winner, "Tie");
+        strcpy(winner_msg, "It's a tie!\n");
     } else if (result == 1) {
         // Player 1 wins
-        snprintf(winner, sizeof(winner), "%s wins!\n", player1->pseudo);
+        strcpy(winner, player1->pseudo);
+        sprintf(winner_msg, "%s wins!\n", player1->pseudo);
     } else {
         // Player 2 wins
-        snprintf(winner, sizeof(winner), "%s wins!\n", player2->pseudo);
+        strcpy(winner, player2->pseudo);
+        sprintf(winner_msg, "%s wins!\n", player2->pseudo);
     }
 
     // Send the result to both players
-    send_message(player1->socket, winner);
-    send_message(player2->socket, winner);
-    memset(winner, 0, sizeof(winner));
+    send_message(player1->socket, winner_msg);
+    send_message(player2->socket, winner_msg);
+
+    for (int i = 0; i < game->observer_count; ++i) {
+        send_message(game->observers[i]->socket, winner_msg);
+    }
 
     // Clean up game state
+    if (game->save_on_exit) {
+        save_game(game, winner);
+    }
+    memset(winner, 0, sizeof(winner));
+    memset(winner_msg, 0, sizeof(winner_msg));
     remove_game(player1->game_id);
 }
 
@@ -1757,6 +1996,23 @@ int capture_seeds(Player *current_player, Player *opponent, int last_pit) {
     memset(message, 0, sizeof(message));
     return captured_seeds;
 }
+
+void handle_save_game(Player *player) {
+    if (player->game_id == -1) {
+        send_message(player->socket, "You are not in the game\n");
+        return;
+    }
+
+    Game *game = active_games[player->game_id];
+    if (game == NULL) {
+        send_message(player->socket, "Game not found\n");
+        return;
+    }
+
+    game->save_on_exit = true;
+    send_message(player->socket, "The game will be saved after its end\n");
+}
+
 
 void make_move(Player *player, char *command) {
     Game *game = active_games[player->game_id];

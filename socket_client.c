@@ -26,6 +26,8 @@ char *logged_out = "Logging out...\n";
 
 const char *LOGOUT = "LOGOUT\n";
 const char *SHOW_ONLINE = "SHOW_ONLINE\n";
+const char *TOP_ONLINE = "TOP_ONLINE\n";
+const char *TOP = "TOP\n";
 const char *SHOW_PLAYERS = "SHOW_PLAYERS\n";
 const char *SHOW_GAMES = "SHOW_GAMES\n";
 const char *CHALLENGE = "CHALLENGE";
@@ -50,8 +52,8 @@ const char *GLOBAL_MESSAGE = "GLOBAL_MESSAGE";
 const char *GAME_MESSAGE = "GAME_MESSAGE";
 const char *DIRECT_MESSAGE = "DIRECT_MESSAGE";
 const char *MAKE_MOVE = "MAKE_MOVE";
-const char *END_GAME = "END_GAME";
-const char *LEAVE_GAME = "LEAVE_GAME";
+const char *SAVE = "SAVE\n";
+const char *LEAVE_GAME = "LEAVE_GAME\n";
 
 
 /** PROTOTYPES */
@@ -96,8 +98,6 @@ void handle_direct_message(int server_socket, const char *command);
 void handle_game_message(int server_socket, const char *command);
 
 void handle_make_move(int server_socket, const char *command);
-
-void handle_end_game(int server_socket, const char *command);
 
 void handle_leave_game(int server_socket, const char *command);
 
@@ -290,6 +290,10 @@ void *handle_user_commands(int server_socket) {
             handle_exit(server_socket);
         } else if (strcmp(buffer, "/online") == 0) {
             handle_online(server_socket);
+        } else if (strcmp(buffer, "/topo") == 0) {
+            send_message(server_socket, TOP_ONLINE);
+        }else if (strcmp(buffer, "/top") == 0) {
+            send_message(server_socket, TOP);
         } else if (strcmp(buffer, "/players") == 0) {
             handle_players(server_socket);
         } else if (strcmp(buffer, "/games") == 0) {
@@ -312,8 +316,6 @@ void *handle_user_commands(int server_socket) {
             handle_game_message(server_socket, buffer);
         } else if (strncmp(buffer, "/m ", 3) == 0) {
             handle_make_move(server_socket, buffer);
-        } else if (strcmp(buffer, "/end") == 0) {
-            handle_end_game(server_socket, buffer);
         } else if (strcmp(buffer, "/leave") == 0) {
             handle_leave_game(server_socket, buffer);
         } else if (strcmp(buffer, "/fr") == 0) {
@@ -338,6 +340,8 @@ void *handle_user_commands(int server_socket) {
             handle_revoke(server_socket);
         } else if (strcmp(buffer, "/pending") == 0) {
             send_message(server_socket, PENDING);
+        } else if (strcmp(buffer, "/save") == 0) {
+            send_message(server_socket, SAVE);
         } else {
             printf("Unknown command: %s\n", buffer);
         }
@@ -400,28 +404,27 @@ void handle_help() {
             "/online - Show online players\n"
             "/players - Show all players\n"
             "/games - Show available games\n"
-            "/challenge - Challenge player by pseudo\n"
+            "/challenge <pseudo> - Challenge a player by pseudo\n"
             "/pending - See pending challenge\n"
-            "/revoke - revoke(cancel) challenge\n"
+            "/revoke - Revoke (cancel) a pending challenge\n"
             "/accept - Accept a challenge\n"
             "/decline - Decline a challenge\n"
-            "/obs <pseudo> - Observe a game the player <pseudo> is in\n"
-            "/qobs - Quit observing the game\n"
+            "/obs <pseudo> - Observe a game that the player <pseudo> is in\n"
+            "/qobs - Quit observing the current game\n"
             "/fr - View your friend list\n"
             "/addfr <pseudo> - Add a friend\n"
-            "\t\t(Remember: friend here means sbd who can see your games, you will not be added to their friend list) \n"
+            "\t(Note: Friends can see your games, but you will not be added to their friend list)\n"
             "/rmfr <pseudo> - Remove a friend\n"
-            "/access - See your privacy level \n"
-            "/private - Allow only friends to observe the games you are in \n"
-            "/public - Allow all players to observe the games you are in \n"
+            "/access - View your privacy settings\n"
+            "/private - Allow only friends to observe the games you are in\n"
+            "/public - Allow all players to observe the games you are in\n"
             "/bio - View your bio\n"
             "/pbio <player> - View another player's bio\n"
             "/update - Update your bio\n"
             "/gl <message> - Send a global message\n"
-            "/chat <message> - Send a message to a game players/observers\n"
+            "/chat <message> - Send a message to game players/observers\n"
             "/msg <pseudo> <message> - Send a direct message to a player\n"
-            "/m - Make a move in the current game\n"
-            "/end - End the current game\n"
+            "/m <move> - Make a move in the current game\n"
             "/leave - Leave the current game\n"
     );
 }
@@ -656,14 +659,8 @@ void handle_make_move(int server_socket, const char *command) {
 
 }
 
-void handle_end_game(int server_socket, const char *command) {
-    printf("Sending END GAME request: %s\n", command);
-    send(server_socket, command, strlen(command), 0);
-}
-
 void handle_leave_game(int server_socket, const char *command) {
-    printf("Sending LEAVE GAME request: %s\n", command);
-    send(server_socket, command, strlen(command), 0);
+    send_message(server_socket, LEAVE_GAME);
 }
 
 void handle_friend_list(int server_socket) {
